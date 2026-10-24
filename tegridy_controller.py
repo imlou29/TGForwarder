@@ -6,6 +6,7 @@ No background scheduling. No bypass of Telegram rate limits.
 import asyncio
 import os
 import signal
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -26,6 +27,23 @@ class BackupJobs:
             return "🟢 Backup running (Telegram controller). Check Status for saved copy count."
         return "⚪ No active controller backup.\nLast controller job: " + self.last_result
 
+    def next_phase(self):
+        path = Path(os.environ.get("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3"))
+        if not path.exists():
+            return "initial"
+        connection = sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True, timeout=5)
+        try:
+            try:
+                row = connection.execute(
+                    "SELECT initial_complete FROM batch_state WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?",
+                    (-1004350769620, 501, -1003900751944, 3962),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return "initial"
+            return "incremental" if row and row[0] else "initial"
+        finally:
+            connection.close()
+
     async def start(self, client, chat_id):
         async with self._guard:
             if self.running():
@@ -35,18 +53,19 @@ class BackupJobs:
             folder.mkdir(parents=True, exist_ok=True)
             log_handle = open(self.last_log_path, "ab", buffering=0)
             try:
+                phase = self.next_phase()
                 self.process = await asyncio.create_subprocess_exec(
                     sys.executable, "-u", "/app/tegridy_batch.py",
-                    "--phase", "initial", "--execute", "--delay", "15",
+                    "--phase", phase, "--execute", "--delay", "15",
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=log_handle, stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,
                 )
             finally:
                 log_handle.close()
-            self.last_result = "Started manual initial batch"
+            self.last_result = "Started manual " + phase + " batch"
             self.watch_task = asyncio.create_task(self._watch(client, chat_id, self.process))
-            return "✅ Manual backup started. Only photos with captions will be copied, paced at 15 seconds per send."
+            return "✅ Manual " + phase + " backup started. Only photos with captions will be copied, paced at 15 seconds per send."
 
     async def _watch(self, client, chat_id, process):
         code = await process.wait()
