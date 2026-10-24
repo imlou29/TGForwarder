@@ -147,12 +147,12 @@ def controller_status(mapping):
 
 
 def controller_help():
-    return ("ℹ️ Tegridy Backup Controller\\n\\n"
-            "Use /start, /status or the private buttons.\\n"
-            "Start / Resume requires a second explicit confirmation and only runs manually.\\n"
-            "Stop sends an interrupt; an in-flight Telegram request may finish.\\n"
-            "Only photos containing a written caption are eligible.\\n"
-            "Telegram group Restrict Saving Content must be disabled by an admin during backup.\\n"
+    return ("ℹ️ Tegridy Backup Controller\n\n"
+            "Use /start, /status or the private buttons.\n"
+            "Start / Resume requires a second explicit confirmation and only runs manually.\n"
+            "Stop sends an interrupt; an in-flight Telegram request may finish.\n"
+            "Only photos containing a written caption are eligible.\n"
+            "Telegram group Restrict Saving Content must be disabled by an admin during backup.\n"
             "Automatic forwarding remains disabled.")
 
 
@@ -191,7 +191,7 @@ async def run_live():
             return
         raw_command = (event.raw_text or "").strip().split(maxsplit=1)
         if raw_command and raw_command[0].split("@")[0].lower() == "/myid":
-            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\\nPanel access requires explicit admin authorization.")
+            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\nPanel access requires explicit admin authorization.")
             return
         # Deny silently so no unauthorized user learns the configured routes.
         if event.sender_id not in allowed_controllers:
@@ -202,7 +202,7 @@ async def run_live():
             await event.respond("🤖 Tegridy Backup Controller\nManual-only mode. Choose a menu option.", buttons=controller_menu())
         elif command == "/status":
             try:
-                await event.respond(controller_status(mapping) + "\\n\\n" + jobs.info(), buttons=controller_menu())
+                await event.respond(controller_status(mapping) + "\n\n" + jobs.info(), buttons=controller_menu())
             except Exception:
                 log.exception("Controller status read failed")
                 await event.respond("⚠️ Unable to read backup progress right now.")
@@ -217,16 +217,16 @@ async def run_live():
         data = event.data or b""
         try:
             if data == b"tg:status":
-                await event.edit(controller_status(mapping) + "\\n\\n" + jobs.info(), buttons=controller_menu())
+                await event.edit(controller_status(mapping) + "\n\n" + jobs.info(), buttons=controller_menu())
             elif data == b"tg:jobs":
-                await event.edit("📋 Manual backup jobs\\n\\n" + jobs.info() + "\\n\\n" + jobs.log_tail(1200), buttons=controller_menu())
+                await event.edit("📋 Manual backup jobs\n\n" + jobs.info() + "\n\n" + jobs.log_tail(1200), buttons=controller_menu())
             elif data == b"tg:confirm":
                 pending_confirmation[event.sender_id] = time.monotonic() + 90
                 await event.edit(
-                    "⚠️ CONFIRM MANUAL BACKUP\\n\\n"
-                    "Touchdowns: resume the initial backup from SQLite (only photos with captions).\\n"
-                    "Telegram Restrict Saving Content must ALREADY be disabled.\\n"
-                    "Telegram may impose FloodWaits. A backup cannot bypass them.\\n"
+                    "⚠️ CONFIRM MANUAL BACKUP\n\n"
+                    "Touchdowns: resume the initial backup from SQLite (only photos with captions).\n"
+                    "Telegram Restrict Saving Content must ALREADY be disabled.\n"
+                    "Telegram may impose FloodWaits. A backup cannot bypass them.\n"
                     "Click CONFIRM within 90 seconds to start sending.",
                     buttons=[[Button.inline("✅ CONFIRM START", b"tg:launch"), Button.inline("↩️ Cancel", b"tg:cancel")]])
             elif data == b"tg:launch":
