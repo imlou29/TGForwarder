@@ -7,9 +7,9 @@ Commands:
   python tegridy_batch.py --phase incremental          # read-only preview
   python tegridy_batch.py --phase incremental --execute
 
-Initial Touchdowns: photo AND nonempty caption only.
-Incremental: all supported messages created after the frozen initial cutoff.
-Requires authorized user StringSession for history and sending. Never log secrets.
+All phases: Telegram photo AND nonempty text caption ONLY.
+Incremental: new eligible photos after the frozen initial cutoff.
+Requires authorized user session on persistent volume. Never log secrets.
 """
 import argparse
 import asyncio
@@ -66,9 +66,7 @@ def is_in_topic(m, topic):
 def eligible(m, phase):
     if m.action:
         return False
-    if phase == "initial":
-        return bool(m.photo and (m.message or "").strip())
-    return bool(m.message or m.media)
+    return bool(m.photo and (m.message or "").strip())
 
 
 async def latest_topic_message_id(client, chat, topic):
@@ -92,7 +90,9 @@ async def run(args):
     if not Path(session_path + ".session").exists():
         raise ValueError("No authorized Telegram user session file; run python tegridy_auth.py via Railway SSH first")
     db = state_db()
-    client = TelegramClient(session_path, int(os.environ["API_ID"]), os.environ["API_HASH"])
+    # Telegram may otherwise silently sleep for short FloodWaits (Telethon default).
+    # Handle every server-requested wait explicitly below, without bypassing it.
+    client = TelegramClient(session_path, int(os.environ["API_ID"]), os.environ["API_HASH"], flood_sleep_threshold=0)
     try:
         await client.connect()
         if not await client.is_user_authorized():
@@ -119,6 +119,7 @@ async def run(args):
 
         scanned = matched = skipped = already = copied = failed = 0
         capped = False
+        stopped_for_flood = False
         # Telegram's forum-thread reply_to filter can exclude the topic root;
         # this intentionally scans posts/replies within the thread, not other topics.
         async for m in client.iter_messages(source[0], reply_to=source[1], reverse=True):
@@ -145,6 +146,10 @@ async def run(args):
                 capped = True
                 break
             try:
+                # Deliberate *pre-send* pacing; no burst at the beginning.
+                # Delay is per outbound photo, not per scanned/skipped message.
+                if args.execute and args.delay:
+                    await asyncio.sleep(args.delay)
                 sent = await copy_message(client, m, *target)
                 if sent is None:
                     raise RuntimeError("Unsupported message content")
@@ -152,11 +157,12 @@ async def run(args):
                 db.execute("INSERT INTO forwarded VALUES (?,?,?,?,?)", (source[0], m.id, *target, sent_id))
                 db.commit()
                 copied += 1
-                if args.delay:
-                    await asyncio.sleep(args.delay)
+                if copied % 10 == 0:
+                    log.info("PROGRESS copied_this_run=%s already_recorded=%s total_done_estimate=%s last_message=%s", copied, already, copied + already, m.id)
             except FloodWaitError as exc:
                 failed += 1
-                log.error("Flood wait %ss; stopped at message %s", exc.seconds, m.id)
+                stopped_for_flood = True
+                log.error("TELEGRAM FLOOD WAIT %ss; STOPPING at message=%s. Do not retry until Telegram wait expires; script will not bypass this restriction.", exc.seconds, m.id)
                 break
             except Exception as exc:
                 failed += 1
@@ -171,8 +177,8 @@ async def run(args):
             else:
                 db.execute("UPDATE batch_state SET last_complete=? WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?", (upper, *source, *target))
             db.commit()
-        log.info("SUMMARY phase=%s scanned=%s matched=%s skipped=%s already_recorded=%s copied=%s failed=%s batch_complete=%s upper=%s",
-                 args.phase, scanned, matched, skipped, already, copied, failed, complete, upper)
+        log.info("SUMMARY phase=%s scanned=%s matched=%s skipped=%s already_recorded=%s copied=%s failed=%s flood_wait=%s batch_complete=%s upper=%s delay_seconds=%s",
+                 args.phase, scanned, matched, skipped, already, copied, failed, stopped_for_flood, complete, upper, args.delay)
         if failed:
             raise RuntimeError("Batch stopped after a copy failure; repair and rerun with deduplication")
     finally:
@@ -187,8 +193,10 @@ if __name__ == "__main__":
     parser.add_argument("--source-topic", default="501")
     parser.add_argument("--execute", action="store_true", help="Actually send copies; omit for read-only preview")
     parser.add_argument("--max-send", type=int, default=0, help="Limit new copies per run; 0 means no cap")
-    parser.add_argument("--delay", type=float, default=0.7, help="Seconds between Telegram sends")
+    parser.add_argument("--delay", type=float, default=15.0, help="Minimum seconds BEFORE each send (default 15, minimum 10 for execute)")
     args = parser.parse_args()
     if args.max_send < 0 or args.delay < 0:
         parser.error("--max-send and --delay must be >= 0")
+    if args.execute and args.delay < 10:
+        parser.error("To protect the account, --delay must be at least 10 seconds when --execute is specified")
     asyncio.run(run(args))
