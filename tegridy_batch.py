@@ -13,6 +13,8 @@ Requires authorized user session on persistent volume. Never log secrets.
 """
 import argparse
 import asyncio
+import fcntl
+import time
 import logging
 import os
 import sqlite3
@@ -184,6 +186,8 @@ async def run(args):
     finally:
         await client.disconnect()
         db.close()
+        fcntl.flock(lock_handle, fcntl.LOCK_UN)
+        lock_handle.close()
 
 
 if __name__ == "__main__":
