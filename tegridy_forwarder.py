@@ -10,10 +10,12 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button
+from tegridy_controller import BackupJobs
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -101,12 +103,13 @@ def controller_menu():
     return [
         [Button.inline("📊 Touchdowns status", b"tg:status")],
         [Button.inline("📋 Jobs", b"tg:jobs"), Button.inline("ℹ️ Help", b"tg:help")],
+        [Button.inline("▶️ Start / Resume", b"tg:confirm"), Button.inline("🛑 Stop", b"tg:stop")],
     ]
 
 
 def controller_status(mapping):
     """Read a fresh SQLite snapshot; do not mutate the batch or its checkpoint."""
-    lines = ["📦 Tegridy Backup — Read-only status", ""]
+    lines = ["📦 Tegridy Backup — Status", ""]
     path = Path(os.environ.get("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3"))
     if not path.exists():
         return "No backup database has been created yet."
@@ -144,11 +147,13 @@ def controller_status(mapping):
 
 
 def controller_help():
-    return ("ℹ️ Backup panel (read-only)\n\n"
-            "Use /start or /status in this private chat.\n"
-            "This bot cannot start, resume or stop a batch yet.\n"
-            "Only photos containing a written caption are eligible.\n"
-            "Keep Telegram content protection enabled outside manually authorized backup windows.")
+    return ("ℹ️ Tegridy Backup Controller\\n\\n"
+            "Use /start, /status or the private buttons.\\n"
+            "Start / Resume requires a second explicit confirmation and only runs manually.\\n"
+            "Stop sends an interrupt; an in-flight Telegram request may finish.\\n"
+            "Only photos containing a written caption are eligible.\\n"
+            "Telegram group Restrict Saving Content must be disabled by an admin during backup.\\n"
+            "Automatic forwarding remains disabled.")
 
 
 async def run_live():
@@ -176,7 +181,9 @@ async def run_live():
                 log.warning("Telegram %s group not resolved id=%s: %s", kind, chat_id, type(exc).__name__)
 
     allowed_controllers = controller_ids()
-    log.info("Read-only private controller configured for %d authorized user(s)", len(allowed_controllers))
+    jobs = BackupJobs()
+    pending_confirmation = {}
+    log.info("Private backup controller configured for %d authorized user(s); launches require explicit confirmation", len(allowed_controllers))
 
     @client.on(events.NewMessage(incoming=True))
     async def controller_dm(event):
@@ -184,7 +191,7 @@ async def run_live():
             return
         raw_command = (event.raw_text or "").strip().split(maxsplit=1)
         if raw_command and raw_command[0].split("@")[0].lower() == "/myid":
-            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\\nRead-only panel access requires explicit admin authorization.")
+            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\\nPanel access requires explicit admin authorization.")
             return
         # Deny silently so no unauthorized user learns the configured routes.
         if event.sender_id not in allowed_controllers:
@@ -192,10 +199,10 @@ async def run_live():
         msg = (event.raw_text or "").strip().split(maxsplit=1)
         command = msg[0].split("@")[0].lower() if msg else ""
         if command in ("/start", "/menu"):
-            await event.respond("🤖 Tegridy Backup Controller\nRead-only panel: no sends or new backup jobs can be started here.", buttons=controller_menu())
+            await event.respond("🤖 Tegridy Backup Controller\nManual-only mode. Choose a menu option.", buttons=controller_menu())
         elif command == "/status":
             try:
-                await event.respond(controller_status(mapping), buttons=controller_menu())
+                await event.respond(controller_status(mapping) + "\\n\\n" + jobs.info(), buttons=controller_menu())
             except Exception:
                 log.exception("Controller status read failed")
                 await event.respond("⚠️ Unable to read backup progress right now.")
@@ -210,9 +217,30 @@ async def run_live():
         data = event.data or b""
         try:
             if data == b"tg:status":
-                await event.edit(controller_status(mapping), buttons=controller_menu())
+                await event.edit(controller_status(mapping) + "\\n\\n" + jobs.info(), buttons=controller_menu())
             elif data == b"tg:jobs":
-                await event.edit("📋 Manual backup jobs\n\nControl: SSH only, no automatic jobs.\nOnly Telegram photos with written captions are eligible.\nUse Status for stored copy counts.", buttons=controller_menu())
+                await event.edit("📋 Manual backup jobs\\n\\n" + jobs.info() + "\\n\\n" + jobs.log_tail(1200), buttons=controller_menu())
+            elif data == b"tg:confirm":
+                pending_confirmation[event.sender_id] = time.monotonic() + 90
+                await event.edit(
+                    "⚠️ CONFIRM MANUAL BACKUP\\n\\n"
+                    "Touchdowns: resume the initial backup from SQLite (only photos with captions).\\n"
+                    "Telegram Restrict Saving Content must ALREADY be disabled.\\n"
+                    "Telegram may impose FloodWaits. A backup cannot bypass them.\\n"
+                    "Click CONFIRM within 90 seconds to start sending.",
+                    buttons=[[Button.inline("✅ CONFIRM START", b"tg:launch"), Button.inline("↩️ Cancel", b"tg:cancel")]])
+            elif data == b"tg:launch":
+                valid_until = pending_confirmation.pop(event.sender_id, 0)
+                if time.monotonic() > valid_until:
+                    await event.answer("Confirmation expired; reopen Start.", alert=True)
+                    return
+                result = await jobs.start(client, event.sender_id)
+                await event.edit(result, buttons=controller_menu())
+            elif data == b"tg:stop":
+                await event.edit(await jobs.stop(), buttons=controller_menu())
+            elif data == b"tg:cancel":
+                pending_confirmation.pop(event.sender_id, None)
+                await event.edit("Cancelled; no backup started by this action.", buttons=controller_menu())
             elif data == b"tg:help":
                 await event.edit(controller_help(), buttons=controller_menu())
             else:
