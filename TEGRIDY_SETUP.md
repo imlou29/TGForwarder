@@ -14,7 +14,7 @@ Railway volume `/data` holds SQLite state. API_ID, API_HASH and BOT_TOKEN are al
 ## Intended manual workflow (not run yet)
 
 1. Keep Telegram's **Restrict Saving Content** enabled during normal operations. The tool does not and cannot toggle Telegram group restrictions for you.
-2. Obtain and privately store an **authorized user's** `USER_SESSION_STRING` after interactive login, using a trusted local machine. Treat as sensitive as a password; never commit it, paste it in chat, or print it in deployment logs. The user account must have access to source and destination groups; the bot token alone cannot enumerate old messages.
+2. Open a **private Railway SSH session** into the dedicated TGForwarder service; run `python tegridy_auth.py` once, entering phone/code/optional 2FA **only into the SSH terminal**. It stores `/data/tgforwarder/user.session` on the existing persistent volume. Do not paste login credentials, codes or session files in ChatGPT, GitHub, variables, or deploy logs. Only a user account with legitimate access can enumerate old history.
 3. On a backup day, admin temporarily disables Restrict Saving Content. **During that window, other members may also be able to save/forward messages.**
 4. Run a read-only preview via a one-shot execution environment with access to the same `/data` SQLite volume, `TOPIC_ROUTES`, API credentials, and user session: `python tegridy_batch.py --phase initial`.
 5. After reviewing preview counts, test a small batch: `python tegridy_batch.py --phase initial --execute --max-send 5`.
@@ -51,7 +51,7 @@ For the monitoring service (not batch): `BOT_TOKEN`, `BOT_SESSION_PATH=/data/tgf
 
 ## Security
 
-Use a separate limited-authority Telegram account with legitimate access if desired. Create StringSession locally with Telethon; review what access the session grants. Keep the session secret. If exposed, terminate the session in Telegram's active sessions.
+Use a dedicated Telegram account with legitimate access. Authorize via `python tegridy_auth.py` in a PRIVATE Railway SSH terminal. Its volume-backed session is a sensitive authentication credential. Anyone with access to the volume or shell can potentially use this account. If compromised, terminate the active session in Telegram. If exposed, terminate the session in Telegram's active sessions.
 
 ## Adding topics
 
