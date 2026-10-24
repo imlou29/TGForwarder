@@ -182,6 +182,9 @@ async def run_live():
     async def controller_dm(event):
         if not event.is_private:
             return
+        if (event.raw_text or "").strip().split(maxsplit=1)[0].split("@")[0].lower() == "/myid":
+            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\\nRead-only panel access requires explicit admin authorization.")
+            return
         # Deny silently so no unauthorized user learns the configured routes.
         if event.sender_id not in allowed_controllers:
             return
