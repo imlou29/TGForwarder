@@ -21,7 +21,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
-from telethon.sessions import StringSession
 
 from tegridy_forwarder import routes, message_topic, copy_message
 
@@ -89,11 +88,11 @@ async def run(args):
         raise ValueError("Initial photo+caption policy is only approved for Touchdowns")
     # Always manually invoked: no live event listener. The user session is needed
     # because bots cannot enumerate full group history.
-    session = os.getenv("USER_SESSION_STRING")
-    if not session:
-        raise ValueError("USER_SESSION_STRING missing; complete authorized local Telegram login first")
+    session_path = os.environ.get("USER_SESSION_PATH", "/data/tgforwarder/user")
+    if not Path(session_path + ".session").exists():
+        raise ValueError("No authorized Telegram user session file; run python tegridy_auth.py via Railway SSH first")
     db = state_db()
-    client = TelegramClient(StringSession(session), int(os.environ["API_ID"]), os.environ["API_HASH"])
+    client = TelegramClient(session_path, int(os.environ["API_ID"]), os.environ["API_HASH"])
     try:
         await client.connect()
         if not await client.is_user_authorized():
