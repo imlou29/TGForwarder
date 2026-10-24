@@ -89,6 +89,7 @@ async def forward_and_record(client, db, message, source_chat, target_chat, targ
 
 async def run_live():
     mapping = routes()
+    diagnostic_only = os.environ.get("TG_DIAGNOSTIC_ONLY", "true").strip().lower() != "false"
     api_id = int(os.environ["API_ID"])
     api_hash = os.environ["API_HASH"]
     token = os.environ["BOT_TOKEN"]
@@ -99,11 +100,23 @@ async def run_live():
     db = database()
     locks = {}
     await client.start(bot_token=token)
-    log.info("Bot authenticated; monitoring %d topic route(s)", len(mapping))
+    me = await client.get_me()
+    log.info("Bot authenticated: id=%s username=%s", me.id, me.username)
+    log.info("DIAGNOSTIC ONLY=%s; monitoring %d topic route(s); no messages will be sent when enabled", diagnostic_only, len(mapping))
+    for source, target in mapping.items():
+        for kind, chat_id in (("source", source[0]), ("destination", target[0])):
+            try:
+                entity = await client.get_entity(chat_id)
+                log.info("Telegram %s group accessible id=%s name=%s", kind, chat_id, getattr(entity, "title", "unknown"))
+            except Exception as exc:
+                log.warning("Telegram %s group not resolved id=%s: %s", kind, chat_id, type(exc).__name__)
 
     @client.on(events.NewMessage(chats=list({k[0] for k in mapping})))
     async def on_message(event):
         topic = message_topic(event.message)
+        if diagnostic_only:
+            log.info("DRY EVENT chat=%s msg=%s topic=%s (NOT FORWARDED)", event.chat_id, event.message.id, topic)
+            return
         destination = mapping.get((event.chat_id, topic))
         if destination is None:
             return
