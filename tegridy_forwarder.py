@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, Button
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -89,6 +89,68 @@ async def forward_and_record(client, db, message, source_chat, target_chat, targ
     return True
 
 
+def controller_ids():
+    """Fail closed: NO controller users until explicitly configured in Railway."""
+    raw = os.environ.get("TG_CONTROLLER_IDS", "").strip()
+    if not raw:
+        return set()
+    return {int(part.strip()) for part in raw.split(",") if part.strip()}
+
+
+def controller_menu():
+    return [
+        [Button.inline("📊 Touchdowns status", b"tg:status")],
+        [Button.inline("📋 Jobs", b"tg:jobs"), Button.inline("ℹ️ Help", b"tg:help")],
+    ]
+
+
+def controller_status(mapping):
+    """Read a fresh SQLite snapshot; do not mutate the batch or its checkpoint."""
+    lines = ["📦 Tegridy Backup — Read-only status", ""]
+    path = Path(os.environ.get("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3"))
+    if not path.exists():
+        return "No backup database has been created yet."
+    connection = sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True, timeout=5)
+    try:
+        for source, target in mapping.items():
+            count = connection.execute(
+                "SELECT COUNT(*) FROM forwarded WHERE source_chat=? AND target_chat=? AND target_topic=?",
+                (source[0], target[0], target[1]),
+            ).fetchone()[0]
+            state = connection.execute(
+                "SELECT initial_cutoff, initial_complete, last_complete FROM batch_state WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?",
+                (*source, *target),
+            ).fetchone()
+            # 407 is the last historic dry-run estimate for Touchdowns only;
+            # not a live enumeration and not a promise of total available posts.
+            estimate = 407 if source == (-1004350769620, 501) and not (state and state[1]) else None
+            lines.append("📍 Touchdowns" if source == (-1004350769620, 501) else "📍 Topic " + str(source[1]))
+            lines.append("✅ Recorded copies: " + str(count))
+            if estimate is not None:
+                lines.append("📷 Historic preview estimate: " + str(estimate))
+                lines.append("📋 Estimated remaining: ~" + str(max(0, estimate - count)))
+                lines.append("📈 Estimated completion: " + f"{min(100.0, count / estimate * 100):.1f}%")
+            lines.append("🏁 Initial batch: " + ("Complete" if state and state[1] else "Incomplete"))
+            if state:
+                lines.append("🔖 Frozen initial cutoff: " + str(state[0]))
+                lines.append("📌 Last completed checkpoint: " + str(state[2]))
+            lines.append("")
+        lines.extend(["🛑 Automatic forwarding: " + ("Disabled" if os.environ.get("TG_DIAGNOSTIC_ONLY", "true").lower() != "false" else "Enabled"),
+                      "⚠️ Active job / FloodWait countdown: not yet instrumented.",
+                      "ℹ️ Counts are saved receipts, not verified destination content."])
+        return "\n".join(lines)
+    finally:
+        connection.close()
+
+
+def controller_help():
+    return ("ℹ️ Backup panel (read-only)\n\n"
+            "Use /start or /status in this private chat.\n"
+            "This bot cannot start, resume or stop a batch yet.\n"
+            "Only photos containing a written caption are eligible.\n"
+            "Keep Telegram content protection enabled outside manually authorized backup windows.")
+
+
 async def run_live():
     mapping = routes()
     diagnostic_only = os.environ.get("TG_DIAGNOSTIC_ONLY", "true").strip().lower() != "false"
@@ -112,6 +174,50 @@ async def run_live():
                 log.info("Telegram %s group accessible id=%s name=%s", kind, chat_id, getattr(entity, "title", "unknown"))
             except Exception as exc:
                 log.warning("Telegram %s group not resolved id=%s: %s", kind, chat_id, type(exc).__name__)
+
+    allowed_controllers = controller_ids()
+    log.info("Read-only private controller configured for %d authorized user(s)", len(allowed_controllers))
+
+    @client.on(events.NewMessage(incoming=True))
+    async def controller_dm(event):
+        if not event.is_private:
+            return
+        # Deny silently so no unauthorized user learns the configured routes.
+        if event.sender_id not in allowed_controllers:
+            return
+        msg = (event.raw_text or "").strip().split(maxsplit=1)
+        command = msg[0].split("@")[0].lower() if msg else ""
+        if command in ("/start", "/menu"):
+            await event.respond("🤖 Tegridy Backup Controller\nRead-only panel: no sends or new backup jobs can be started here.", buttons=controller_menu())
+        elif command == "/status":
+            try:
+                await event.respond(controller_status(mapping), buttons=controller_menu())
+            except Exception:
+                log.exception("Controller status read failed")
+                await event.respond("⚠️ Unable to read backup progress right now.")
+        elif command == "/help":
+            await event.respond(controller_help(), buttons=controller_menu())
+
+    @client.on(events.CallbackQuery())
+    async def controller_buttons(event):
+        if not event.is_private or event.sender_id not in allowed_controllers:
+            await event.answer("Not authorized.", alert=True)
+            return
+        data = event.data or b""
+        try:
+            if data == b"tg:status":
+                await event.edit(controller_status(mapping), buttons=controller_menu())
+            elif data == b"tg:jobs":
+                await event.edit("📋 Manual backup jobs\n\nControl: SSH only, no automatic jobs.\nOnly Telegram photos with written captions are eligible.\nUse Status for stored copy counts.", buttons=controller_menu())
+            elif data == b"tg:help":
+                await event.edit(controller_help(), buttons=controller_menu())
+            else:
+                await event.answer("Unknown action.", alert=True)
+                return
+            await event.answer()
+        except Exception:
+            log.exception("Controller button failed")
+            await event.answer("Unable to load panel.", alert=True)
 
     @client.on(events.NewMessage(chats=list({k[0] for k in mapping})))
     async def on_message(event):
