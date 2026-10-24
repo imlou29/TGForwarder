@@ -62,7 +62,9 @@ def already_sent(db, source_chat, source_msg, target_chat, target_topic):
 
 async def copy_message(client, message, target_chat, target_topic):
     """Copy content into the destination thread (Telegram will assign a new date)."""
-    if message.action:
+    # Global invariant: ONLY Telegram photos with a nonempty written caption.
+    # Applies to manual batches and any future live forwarding configuration.
+    if message.action or not message.photo or not (message.message or "").strip():
         return None
     if message.media:
         # Telethon can send most media using a Telegram media reference. Some
