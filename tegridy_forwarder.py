@@ -64,7 +64,7 @@ async def copy_message(client, message, target_chat, target_topic, content_filte
     """Copy eligible content; media and text retain captions where supported."""
     if not filter_message(message, content_filter, exclude_fun):
         return None
-    if message.media:
+    if message.media and (message.photo or message.video or message.document):
         # Telethon can send most media using a Telegram media reference. Some
         # restricted/unsupported media cannot be copied; log failure instead.
         sent = await client.send_file(target_chat, message.media, caption=message.message or "", formatting_entities=message.entities or None, reply_to=target_topic)
