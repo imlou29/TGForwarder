@@ -37,6 +37,9 @@ def connect():
         source_topic INTEGER NOT NULL, PRIMARY KEY(admin_id,source_chat,source_topic))""")
     db.execute("""CREATE TABLE IF NOT EXISTS backup_settings (
         key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS topic_rescan (
+        source_chat INTEGER NOT NULL, source_topic INTEGER NOT NULL,
+        PRIMARY KEY (source_chat,source_topic))""")
     db.execute("""CREATE TABLE IF NOT EXISTS backup_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER,
         source_chat INTEGER, source_topic INTEGER, target_chat INTEGER,
@@ -88,7 +91,7 @@ def mappings(db, enabled_only=True):
 def selected(db, admin_id):
     rows = db.execute("SELECT source_chat,source_topic FROM topic_selections WHERE admin_id=?", (admin_id,)).fetchall()
     if rows:
-        return set((int(a), int(b)) for a,b in rows)
+        return set((int(a), int(b)) for a,b in rows if int(b)>=0)
     # Default Touchdowns only. Empty selection after explicit clearing uses sentinel.
     sentinel = db.execute("SELECT 1 FROM topic_selections WHERE admin_id=? AND source_topic=-1", (admin_id,)).fetchone()
     return set() if sentinel else {(SRC,501)}
@@ -123,10 +126,11 @@ def filter_message(m, mode="photo_caption", exclude_fun=True):
 
 def add_copy(db, source_chat, source_msg, target_chat, target_topic, target_msg):
     with db:
-        db.execute("INSERT OR IGNORE INTO forwarded VALUES (?,?,?,?,?)",
-                   (source_chat, source_msg, target_chat, target_topic, target_msg))
-        db.execute("INSERT OR IGNORE INTO copy_events VALUES (?,?,?,?,?)",
-                   (source_chat, source_msg, target_chat, target_topic, time.time()))
+        result=db.execute("INSERT OR IGNORE INTO forwarded VALUES (?,?,?,?,?)",
+                          (source_chat, source_msg, target_chat, target_topic, target_msg))
+        if result.rowcount:
+            db.execute("INSERT OR IGNORE INTO copy_events VALUES (?,?,?,?,?)",
+                       (source_chat, source_msg, target_chat, target_topic, time.time()))
 
 
 def count_copies(db, route):
