@@ -91,6 +91,15 @@ async def run(args):
     session_path = os.environ.get("USER_SESSION_PATH", "/data/tgforwarder/user")
     if not Path(session_path + ".session").exists():
         raise ValueError("No authorized Telegram user session file; run python tegridy_auth.py via Railway SSH first")
+    # A single volume-backed lock prevents overlapping manual and controller runs.
+    lock_path = Path(os.getenv("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3")).with_suffix(".batch.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = open(lock_path, "a+")
+    try:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_handle.close()
+        raise RuntimeError("Another backup is already running")
     db = state_db()
     # Telegram may otherwise silently sleep for short FloodWaits (Telethon default).
     # Handle every server-requested wait explicitly below, without bypassing it.
