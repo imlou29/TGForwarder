@@ -43,7 +43,11 @@ class BackupJobs:
         row=db.execute("""SELECT initial_complete FROM batch_state
              WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?""",
              (route["source_chat"],route["source_topic"],route["target_chat"],route["target_topic"])).fetchone()
-        return "incremental" if row and row[0] else "initial"
+        if not (row and row[0]):
+            return "initial"
+        changed=db.execute("SELECT 1 FROM topic_rescan WHERE source_chat=? AND source_topic=?",
+                           (route["source_chat"],route["source_topic"])).fetchone()
+        return "rescan" if changed else "incremental"
 
     def selected_routes(self, admin_id):
         db=connect()
@@ -66,6 +70,9 @@ class BackupJobs:
                 db.close()
             if not routes:
                 return "⚠️ No linked topics selected. Open Topics and select at least one."
+            if self.progress_task is not None and not self.progress_task.done():
+                self.progress_task.cancel()
+            self._last_text=None
             self.stop_requested=False
             self.chat_id=admin_id
             self.message_id=message_id
@@ -138,7 +145,16 @@ class BackupJobs:
                     if self.stop_requested:
                         result="Stopped";break
                     if count == 0:
-                        self.done_prior+=0
+                        db=connect()
+                        try:
+                            run_id=register_run(db,admin_id,route,phase)
+                            finish_run(db,run_id,"completed")
+                            if phase=="rescan":
+                                with db:
+                                    db.execute("DELETE FROM topic_rescan WHERE source_chat=? AND source_topic=?",
+                                               (route["source_chat"],route["source_topic"]))
+                        finally:
+                            db.close()
                         continue
                     self.phase="Copying "+(route["name"] or str(route["source_topic"]))
                     db=connect()
@@ -152,6 +168,10 @@ class BackupJobs:
                         sent=db.execute("SELECT copied FROM backup_runs WHERE id=?", (run_id,)).fetchone()[0]
                         finish_run(db,run_id,"completed" if code==0 else ("stopped" if self.stop_requested else "failed"),
                                    "" if code==0 else output[-300:])
+                        if code==0 and phase=="rescan":
+                            with db:
+                                db.execute("DELETE FROM topic_rescan WHERE source_chat=? AND source_topic=?",
+                                           (route["source_chat"],route["source_topic"]))
                     finally:
                         db.close()
                     self.done_prior+=sent
