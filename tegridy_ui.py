@@ -184,6 +184,8 @@ def install(client,jobs,authorized):
                 await render(event,help_text(),menu(db))
             elif action=="topics":
                 await render(event,*topics_text(db,event.sender_id))
+            elif action=="filters":
+                await render(event,"⚙️ Backup Filters\n\nChoose a linked topic to set its own content filter, or apply one filter to multiple selected topics.\n\nTouchdowns always requires photos with written captions.",[[Button.inline("📂 Choose topic",b"tg:topics"),Button.inline("☑️ Bulk filters",b"tg:bulk")],[Button.inline("🏠 Menu",b"tg:menu")]])
             elif action=="t":
                 await render(event,*topics_text(db,event.sender_id,int(parts[2])))
             elif action=="s":
@@ -335,4 +337,4 @@ def help_text():
             "Touchdowns always backs up photos with written captions; stickers/GIFs excluded.\n"
             "Manual backups use a 15-second pre-send delay and stop for Telegram FloodWait.\n"
             "Do not disable Telegram Restrict Saving Content outside authorized backup windows.\n"
-            "All three allowed admins can operate these controls.")
+            "Only users explicitly authorized in TG_CONTROLLER_IDS can operate these controls.")
