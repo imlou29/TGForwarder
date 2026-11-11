@@ -7,8 +7,9 @@ Commands:
   python tegridy_batch.py --phase incremental          # read-only preview
   python tegridy_batch.py --phase incremental --execute
 
-All phases: Telegram photo AND nonempty text caption ONLY.
-Incremental: new eligible photos after the frozen initial cutoff.
+Per-topic filters are stored in SQLite. Touchdowns is photo+caption ONLY.
+Incremental: new eligible messages after the topic's completed checkpoint.
+Rescan: reevaluate historical content after a changed filter without deleting receipts.
 Requires authorized user session on persistent volume. Never log secrets.
 """
 import argparse
@@ -59,6 +60,11 @@ def eligible(m, mode, exclude_fun):
 
 
 async def latest_topic_message_id(client, chat, topic):
+    if topic == 1:
+        # General is a special forum topic: group-wide last ID is a safe
+        # upper bound; the scan later filters out every non-General topic.
+        message = await client.get_messages(chat, limit=1)
+        return message[0].id if message else 1
     async for message in client.iter_messages(chat, reply_to=topic, limit=1):
         if is_in_topic(message, topic):
             return message.id
@@ -123,7 +129,9 @@ async def run(args):
         stopped_for_flood = False
         # Telegram's forum-thread reply_to filter can exclude the topic root;
         # this intentionally scans posts/replies within the thread, not other topics.
-        async for m in client.iter_messages(source[0], reply_to=source[1], reverse=True):
+        messages=(client.iter_messages(source[0], reverse=True) if source[1] == 1
+                  else client.iter_messages(source[0], reply_to=source[1], reverse=True))
+        async for m in messages:
             if m.id <= lower:
                 continue
             if m.id > upper:
