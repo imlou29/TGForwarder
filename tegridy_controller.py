@@ -25,6 +25,7 @@ class BackupJobs:
         self.started = 0
         self.last_result = "No controller backup started since service restart."
         self.label = ""
+        self.routes = []
         self.total_expected = None
         self.done_prior = 0
         self.phase = "Idle"
@@ -84,6 +85,7 @@ class BackupJobs:
                 self.progress_task.cancel()
             self._last_text=None
             self.stop_requested=False
+            self.routes=list(routes)  # Frozen job scope; UI selection may change later.
             self.chat_id=admin_id
             self.message_id=message_id
             self.started=time.time()
@@ -220,7 +222,7 @@ class BackupJobs:
         try:
             # count events for all selected work in this job; old successful copies
             # are excluded by timestamp. The selected topic scope is enforced.
-            routes=self.selected_routes(self.chat_id) if self.chat_id else []
+            routes=self.routes
             return sum(len(db.execute("""SELECT source_msg FROM copy_events
                   WHERE source_chat=? AND target_chat=? AND target_topic=? AND sent_at>=?""",
                  (r["source_chat"],r["target_chat"],r["target_topic"],self.started)).fetchall())
