@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-from tegridy_forwarder import routes, message_topic, copy_message
+from tegridy_forwarder import message_topic, copy_message
+from tegridy_state import connect, filter_message, add_copy, set_run_copied, route_filter
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,20 +33,7 @@ log = logging.getLogger("tegridy-manual-batch")
 
 
 def state_db():
-    path = Path(os.getenv("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(path))
-    db.execute("CREATE TABLE IF NOT EXISTS forwarded (source_chat INTEGER NOT NULL, source_msg INTEGER NOT NULL, target_chat INTEGER NOT NULL, target_topic INTEGER NOT NULL, target_msg INTEGER, PRIMARY KEY (source_chat,source_msg,target_chat,target_topic))")
-    db.execute("""CREATE TABLE IF NOT EXISTS batch_state (
-        source_chat INTEGER NOT NULL, source_topic INTEGER NOT NULL,
-        target_chat INTEGER NOT NULL, target_topic INTEGER NOT NULL,
-        initial_cutoff INTEGER NOT NULL, initial_complete INTEGER NOT NULL DEFAULT 0,
-        last_complete INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (source_chat, source_topic, target_chat, target_topic)
-    )""")
-    db.commit()
-    return db
-
+    return connect()
 
 def get_state(db, source, target):
     return db.execute(
@@ -62,13 +50,12 @@ def seen(db, source, target, msg_id):
 
 
 def is_in_topic(m, topic):
-    return m.id == topic or message_topic(m) == topic
+    found = message_topic(m)
+    return m.id == topic or found == topic or (topic == 1 and found is None)
 
 
-def eligible(m, phase):
-    if m.action:
-        return False
-    return bool(m.photo and (m.message or "").strip())
+def eligible(m, mode, exclude_fun):
+    return filter_message(m, mode, exclude_fun)
 
 
 async def latest_topic_message_id(client, chat, topic):
@@ -79,13 +66,7 @@ async def latest_topic_message_id(client, chat, topic):
 
 
 async def run(args):
-    mapping = routes()
     source = (int(args.source_chat), int(args.source_topic))
-    target = mapping.get(source)
-    if target is None:
-        raise ValueError("Source topic not configured in TOPIC_ROUTES")
-    if args.phase == "initial" and source != (-1004350769620, 501):
-        raise ValueError("Initial photo+caption policy is only approved for Touchdowns")
     # Always manually invoked: no live event listener. The user session is needed
     # because bots cannot enumerate full group history.
     session_path = os.environ.get("USER_SESSION_PATH", "/data/tgforwarder/user")
@@ -101,6 +82,12 @@ async def run(args):
         lock_handle.close()
         raise RuntimeError("Another backup is already running")
     db = state_db()
+    route = db.execute("SELECT target_chat,target_topic,content_filter,exclude_fun FROM topic_routes WHERE source_chat=? AND source_topic=? AND enabled=1", source).fetchone()
+    if route is None:
+        raise ValueError("Source topic not linked and enabled in SQLite")
+    target = (int(route[0]),int(route[1]))
+    content_filter, exclude_fun = route[2],bool(route[3])
+    run_id = int(os.environ.get("BACKUP_RUN_ID", "0"))
     # Telegram may otherwise silently sleep for short FloodWaits (Telethon default).
     # Handle every server-requested wait explicitly below, without bypassing it.
     client = TelegramClient(session_path, int(os.environ["API_ID"]), os.environ["API_HASH"], flood_sleep_threshold=0)
@@ -111,19 +98,22 @@ async def run(args):
         record = get_state(db, source, target)
         if args.phase == "initial" and record and record[1]:
             raise ValueError("Initial batch already completed; use --phase incremental")
-        if args.phase == "incremental" and (not record or not record[1]):
+        if args.phase in ("incremental", "rescan") and (not record or not record[1]):
             raise ValueError("Complete initial batch before incremental mode")
 
         latest = await latest_topic_message_id(client, *source)
         if args.phase == "initial":
             upper = record[0] if record else latest
             lower = 0
+        elif args.phase == "rescan":
+            lower = 0
+            upper = latest
         else:
             lower = record[2]
             upper = latest
         log.info("MODE=%s phase=%s source=%s topic=%s destination=%s topic=%s bounds=(%s,%s]",
                  "EXECUTE" if args.execute else "DRY_RUN", args.phase, source[0], source[1], target[0], target[1], lower, upper)
-        if args.execute and not record:
+        if args.execute and not record and args.phase == "initial":
             # Freeze initial historical cutoff even on partial/interrupted runs.
             db.execute("INSERT INTO batch_state VALUES (?,?,?,?,?,0,0)", (*source, *target, upper))
             db.commit()
@@ -142,7 +132,7 @@ async def run(args):
             if not is_in_topic(m, source[1]):
                 skipped += 1
                 continue
-            if not eligible(m, args.phase):
+            if not eligible(m, content_filter, exclude_fun):
                 skipped += 1
                 continue
             matched += 1
@@ -161,13 +151,15 @@ async def run(args):
                 # Delay is per outbound photo, not per scanned/skipped message.
                 if args.execute and args.delay:
                     await asyncio.sleep(args.delay)
-                sent = await copy_message(client, m, *target)
+                sent = await copy_message(client, m, *target, content_filter=content_filter, exclude_fun=exclude_fun)
                 if sent is None:
                     raise RuntimeError("Unsupported message content")
                 sent_id = sent[0].id if isinstance(sent, list) else sent.id
-                db.execute("INSERT INTO forwarded VALUES (?,?,?,?,?)", (source[0], m.id, *target, sent_id))
-                db.commit()
+                add_copy(db, source[0], m.id, *target, sent_id)
                 copied += 1
+                if run_id:
+                    set_run_copied(db, run_id, copied)
+                log.info("COPY_EVENT phase=%s source_topic=%s msg=%s count=%s", args.phase, source[1], m.id, copied)
                 if copied % 10 == 0:
                     log.info("PROGRESS copied_this_run=%s already_recorded=%s total_done_estimate=%s last_message=%s", copied, already, copied + already, m.id)
             except FloodWaitError as exc:
@@ -185,7 +177,7 @@ async def run(args):
         if complete:
             if args.phase == "initial":
                 db.execute("UPDATE batch_state SET initial_complete=1, last_complete=? WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?", (upper, *source, *target))
-            else:
+            elif args.phase == "incremental":
                 db.execute("UPDATE batch_state SET last_complete=? WHERE source_chat=? AND source_topic=? AND target_chat=? AND target_topic=?", (upper, *source, *target))
             db.commit()
         log.info("SUMMARY phase=%s scanned=%s matched=%s skipped=%s already_recorded=%s copied=%s failed=%s flood_wait=%s batch_complete=%s upper=%s delay_seconds=%s",
@@ -201,7 +193,7 @@ async def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Explicitly triggered Tegridy forum-topic backup; never a daemon")
-    parser.add_argument("--phase", choices=["initial", "incremental"], required=True)
+    parser.add_argument("--phase", choices=["initial", "incremental", "rescan"], required=True)
     parser.add_argument("--source-chat", default="-1004350769620")
     parser.add_argument("--source-topic", default="501")
     parser.add_argument("--execute", action="store_true", help="Actually send copies; omit for read-only preview")
