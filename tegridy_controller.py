@@ -11,7 +11,7 @@ from pathlib import Path
 from telethon import Button
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 from tegridy_state import (connect, selected, mappings, settings, register_run,
-                          finish_run, recent_events, history)
+                          finish_run, recent_events, history, set_setting)
 
 
 class BackupJobs:
@@ -37,7 +37,14 @@ class BackupJobs:
     def info(self):
         if self.running():
             return "🟢 " + self.phase + " — " + self.label
-        return "⚪ No active controller backup.\nLast job: " + self.last_result
+        db=connect()
+        try:
+            until=int(settings(db,"flood_wait_until","0"))
+        finally:
+            db.close()
+        remaining=until-int(time.time())
+        wait=("\n⏸️ Telegram FloodWait: ~"+str((remaining+59)//60)+" min remaining" if remaining>0 else "")
+        return "⚪ No active controller backup.\nLast job: " + self.last_result + wait
 
     def next_phase(self, db, route):
         row=db.execute("""SELECT initial_complete FROM batch_state
@@ -65,6 +72,9 @@ class BackupJobs:
             try:
                 if settings(db,"auto_forwarding","off") == "on":
                     return "⚠️ Turn automatic forwarding OFF before running a manual batch."
+                wait_until=int(settings(db,"flood_wait_until","0"))
+                if wait_until>time.time():
+                    return "⏸️ Telegram FloodWait active. Wait ~"+str((wait_until-int(time.time())+59)//60)+" minutes before retrying."
                 routes=[r for r in mappings(db) if (r["source_chat"],r["source_topic"]) in selected(db,admin_id)]
             finally:
                 db.close()
@@ -180,7 +190,16 @@ class BackupJobs:
                             result="Stopped"
                         else:
                             flood=re.search(r"FLOOD WAIT (\d+)s",output)
-                            result=("FloodWait "+flood.group(1)+"s — stopped" if flood else "Failed; see Jobs")
+                            if flood:
+                                wait_seconds=int(flood.group(1))
+                                db=connect()
+                                try:
+                                    set_setting(db,"flood_wait_until",str(int(time.time())+wait_seconds))
+                                finally:
+                                    db.close()
+                                result="FloodWait "+str(wait_seconds)+"s — stopped"
+                            else:
+                                result="Failed; see Jobs"
                         break
             self.last_result=result
         except Exception as exc:
@@ -243,6 +262,13 @@ class BackupJobs:
             lines.append("📋 Eligible total: scanning…")
         lines.append("🚀 Recent rate: "+(f"{speed:.2f} copies/min" if speed is not None else "Calculating…"))
         if final:
+            db=connect()
+            try:
+                until=int(settings(db,"flood_wait_until","0"))
+                if until>time.time():
+                    lines.append("⏸️ Telegram retry after ~"+str((until-int(time.time())+59)//60)+" min")
+            finally:
+                db.close()
             lines.append("🏁 Final job state; refresh Jobs for history.")
         else:
             lines.append("🔄 Updates every 15 seconds when changed.")
