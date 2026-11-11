@@ -114,7 +114,8 @@ def filter_message(m, mode="photo_caption", exclude_fun=True):
     has_text = bool((getattr(m, "message", None) or "").strip())
     photo = bool(getattr(m, "photo", None))
     if mode == "text":
-        return bool(has_text and not getattr(m, "media", None))
+        # A website preview is still a text message; copy its text without the preview.
+        return bool(has_text and not (photo or getattr(m, "video", None) or getattr(m, "document", None)))
     if mode == "photos":
         return photo
     if mode == "photo_caption":
