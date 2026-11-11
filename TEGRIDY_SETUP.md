@@ -1,17 +1,17 @@
-# Tegridy backup — manual batches (experimental)
+# Tegridy Backup Controller 2.0 — manual and optional automatic backups
 
 The source and destination are:
 - **Source:** group `-1004350769620`, Touchdowns topic `501` (source ID confirmed by a diagnostic incoming-message log).
-- **Destination:** group `-1003900751944`, Touchdowns topic `3962` (destination **not yet validated by a successful send**).
-- Additional topics require individually approved routing and eligibility policies.
+- **Destination:** group `-1003900751944`, Touchdowns topic `3962` (the user confirmed successful copies on 2026-10-24).
+- Additional topics are discovered and explicitly linked via the Telegram controller, with independent content filters.
 
-## Current production-safe configuration
+## Current configuration
 
-The Railway service `TGForwarder` (project `adequate-respect`) runs `python tegridy_forwarder.py` with `TG_DIAGNOSTIC_ONLY=true`. It is **NOT a backup worker** in this state; it only authenticates and logs incoming event metadata. **Do not turn this off for manual batches.** OpenClaw is a separate Railway project and is not involved.
+Railway service `TGForwarder` (project `adequate-respect`) runs `python tegridy_forwarder.py`. It provides a Telegram admin controller, manual backup subprocesses, and optional automatic forwarding. The **durable SQLite** setting `backup_settings.auto_forwarding` defaults to `off`; admins can explicitly turn it ON/OFF via Telegram with confirmation to enable. The old `TG_DIAGNOSTIC_ONLY` Railway variable is **legacy and not used by the new runtime switch**. Do not change it to enable automatic forwarding. **OpenClaw is a separate project and must not be touched.**
 
 Railway volume `/data` holds SQLite state. API_ID, API_HASH and BOT_TOKEN are already stored as Railway service variables. `SOURCE_ID` / `TARGET_ID` are ignored by the topic-specific script.
 
-## Manual workflow (first batch in progress / resumable)
+## Manual workflow (October initial batch completed; future batches incremental)
 
 1. Keep Telegram's **Restrict Saving Content** enabled during normal operations. The tool does not and cannot toggle Telegram group restrictions for you.
 2. Open a **private Railway SSH session** into the dedicated TGForwarder service; run `python tegridy_auth.py` once, entering phone/code/optional 2FA **only into the SSH terminal**. It stores `/data/tgforwarder/user.session` on the existing persistent volume. Do not paste login credentials, codes or session files in ChatGPT, GitHub, variables, or deploy logs. Only a user account with legitimate access can enumerate old history.
@@ -59,12 +59,28 @@ Add an explicit source/destination mapping to `TOPIC_ROUTES`, review topic IDs a
 
 ## Resuming safely after a FloodWait
 
-The initial batch stopped on 2026-10-24 after a Telegram FloodWait of 1654 seconds, having copied 3 photos earlier and 297 in the next run (approximately 300 registered). Respect the Telegram wait fully before attempting another send. The SQLite `forwarded` table already records successful sends, while `batch_state` freezes the initial upper bound. **Do not delete either table or reinitialize the persistent volume.** Use `/app/.venv/bin/python /app/tegridy_batch.py --phase initial --execute` to resume after the wait; the new default pacing applies. Do not invoke parallel backups. `PROGRESS` is logged every 10 sends, while `SUMMARY` is printed on termination. Telegram `Restrict Saving Content` must be temporarily disabled by group admins during manual copy windows.
+The initial batch encountered a Telegram FloodWait of 1654 seconds on 2026-10-24 after about 300 copies; the user later confirmed that the backup for that day completed successfully. The current saved copy count should be checked from SQLite before any later batch. Respect the Telegram wait fully before attempting another send. The SQLite `forwarded` table already records successful sends, while `batch_state` freezes the initial upper bound. **Do not delete either table or reinitialize the persistent volume.** Use `/app/.venv/bin/python /app/tegridy_batch.py --phase initial --execute` to resume after the wait; the new default pacing applies. Do not invoke parallel backups. `PROGRESS` is logged every 10 sends, while `SUMMARY` is printed on termination. Telegram `Restrict Saving Content` must be temporarily disabled by group admins during manual copy windows.
 
 ## Telegram admin controller (manual operation)
 
-The private `@TegridyBackup_bot` panel authorizes ONLY Telegram user IDs in `TG_CONTROLLER_IDS` (comma-separated, configured on the TGForwarder Railway service). It runs alongside the diagnostic bot, while `TG_DIAGNOSTIC_ONLY=true` keeps **automatic forwarding disabled**. Buttons: **Touchdowns status**, **Jobs**, **Help**, **Start / Resume**, **Stop**. Start requires a separate **CONFIRM START** action within 90 seconds. No schedule or cron is installed.
+The private `@TegridyBackup_bot` panel authorizes ONLY Telegram IDs in `TG_CONTROLLER_IDS` (comma-separated, configured on the TGForwarder Railway service): `6570407118`, `8837667454`, `8454891650`. Buttons: **Status**, **Jobs**, **Start / Resume**, **Stop**, **Topics / Select**, **Sync Topics**, **Auto Forwarding ON/OFF**, **Filters**, and **Help**. Start requires **CONFIRM START** within 90 seconds; forwarding ON also requires confirmation. There is no schedule/cron. New installations start with auto forwarding OFF, and manual backups cannot start while auto forwarding is ON.
 
 The controller starts a single subprocess using the existing volume-backed Telegram **user** session, photo-with-written-caption eligibility, and **15-second pre-send spacing**. After the first historical batch completes, the controller selects `incremental` automatically. On interruption it can restart against the original frozen cutoff, skipping SQLite receipts. The manual script and controller both acquire the same persistent `.batch.lock` advisory lock. A Telegram FloodWait halts the job and must expire before a new attempt; it is not bypassed.
 
 **Important limitations:** The bot cannot change Telegram's `Restrict Saving Content` setting. Only start after an administrator manually disables that setting for the backup window. `Stop` interrupts its own subprocess; a Telegram request already underway may finish before the stop takes effect. The panel's progress counts come from SQLite; an estimated count of 407 was measured in an earlier dry run and is not continuously recalculated. The bot's current in-process job state is lost during Railway redeploy/restart. Do not redeploy while a backup is active. The service restart could interrupt a job; existing SQLite receipts remain. Telegram message fidelity and destination placement should be visually verified.
+
+
+## Version 2.0 feature guide (2026-11-11)
+
+1. **Live progress:** the button used for confirming a manual backup becomes the one progress message; the bot edits that same message every **15 seconds only when the content changes**, with no repeated notification stream. Shows per-job copies, dry-run planned total, % where known, recent 20-send speed, approximate ETA, FloodWait deadline and final result. Telegram may throttle edits; this does not affect copying.
+2. **Multiple topics:** `Topics / Select` enables individual toggles, **All linked** and **Clear**. Each administrator's selection is stored in SQLite, but jobs freeze their selected routes at start. New/other topics must be linked first.
+3. **Independent content filters:** `text` (plain chat text, including messages with link previews), `photos` (with or without caption), `photo_caption` (photo with nonempty written caption), and `all` (text, photos, videos, documents where supported). Stickers/GIFs/service messages are excluded by default; the exclusion can be toggled for other topics. **Touchdowns topic 501 is locked to photo_caption**, always excluding GIFs/stickers.
+4. **Filter change after completion:** a changed topic filter marks `topic_rescan`; on next confirmed manual run, the controller scans the historical topic again **without deleting copy receipts**, skipping already-recorded messages. Topic-level checkpoints are separate in `batch_state`.
+5. **Sync Topics:** scans both configured Telegram forum groups using the dedicated user session. Finds and automatically links only **unique exact normalized-name matches**; existing saved mappings always win. Ambiguous or unmatched topics are shown for an admin to explicitly link. Discovery never copies posts.
+6. **Create missing:** admin chooses an unlinked source topic and clicks **Create missing topic** then **CONFIRM CREATE**. The controller rescans both groups to avoid duplicates and requires the dedicated user to have Telegram Manage Topics rights in the destination. If the outcome is uncertain, it does NOT blindly retry; rescan first.
+7. **Automatic forwarding:** separate SQLite `auto_forwarding=off/on` runtime switch, toggled in the Telegram private menu. ON copies only newly observed eligible posts in linked topics, at 15-second pre-send spacing; it does NOT start a historical backup. OFF stops new transfers (a Telegram request already in progress may finish). Telegram's content-protection rules are never bypassed. Do not manually backfill while automatic forwarding is ON.
+8. **History, recovery and verification:** `backup_runs`, `copy_events` and per-topic checkpoints persist on `/data`. A service restart marks an in-progress controller job `interrupted` rather than claiming completion; the next run resumes by receipts/checkpoints. `Topic Details → Verify last 100` compares recent source/destination messages by availability, media type and caption/text **read-only**. This is a sample integrity check, **not** a cryptographic check of photo bytes or a complete proof of all historical posts. A send accepted by Telegram just before SQLite writes its receipt may still duplicate after an unexpected crash.
+
+**Manual starting precautions:** Telegram group `Restrict Saving Content` must be temporarily switched off by an authorized group administrator if it otherwise blocks copying; the bot does not manage this setting. Verify destination rights and topic mappings in the menu, then start a small authorized test batch. The original user session and volume must remain private. **No automatic job or any copy is started by deploying these code changes.**
+
+**Scope limitation:** The configured source/destination *groups* are fixed to Tegridy and Tegridy Backup 3.0; topic discovery and creation operate within this pair. Arbitrary group-pair selection, exact preservation of original message authors/time/reactions/albums, independent auto-forward retry queues, and full-media cryptographic verification are not implemented.
