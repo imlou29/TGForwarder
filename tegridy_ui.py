@@ -172,6 +172,8 @@ def install(client,jobs,authorized):
         await event.answer()
         db=connect()
         try:
+            if jobs.running() and action in ("f","x","bf","lk","cr","auto_on","scan"):
+                raise ValueError("Stop the active manual backup before editing topic mappings, filters or forwarding mode")
             if action=="menu":
                 await render(event,"🤖 Tegridy Backup Controller",menu(db))
             elif action=="status":
