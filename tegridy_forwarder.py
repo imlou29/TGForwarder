@@ -6,6 +6,7 @@ Requires Telethon 1.40.0. TOPIC_ROUTES is a JSON array, for example:
 Legacy SOURCE_ID and TARGET_ID are deliberately ignored.
 """
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -16,6 +17,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button
 from tegridy_controller import BackupJobs
+from tegridy_ui import install
+from tegridy_state import connect, mappings, filter_message, add_copy, settings, SRC
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -50,23 +53,16 @@ def message_topic(message):
 
 
 def database():
-    path = Path(os.environ.get("BACKUP_DB_PATH", "/data/tgforwarder/forwarded.sqlite3"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(path))
-    db.execute("CREATE TABLE IF NOT EXISTS forwarded (source_chat INTEGER NOT NULL, source_msg INTEGER NOT NULL, target_chat INTEGER NOT NULL, target_topic INTEGER NOT NULL, target_msg INTEGER, PRIMARY KEY (source_chat,source_msg,target_chat,target_topic))")
-    db.commit()
-    return db
+    return connect()
 
 
 def already_sent(db, source_chat, source_msg, target_chat, target_topic):
     return db.execute("SELECT 1 FROM forwarded WHERE source_chat=? AND source_msg=? AND target_chat=? AND target_topic=?", (source_chat, source_msg, target_chat, target_topic)).fetchone() is not None
 
 
-async def copy_message(client, message, target_chat, target_topic):
-    """Copy content into the destination thread (Telegram will assign a new date)."""
-    # Global invariant: ONLY Telegram photos with a nonempty written caption.
-    # Applies to manual batches and any future live forwarding configuration.
-    if message.action or not message.photo or not (message.message or "").strip():
+async def copy_message(client, message, target_chat, target_topic, content_filter="photo_caption", exclude_fun=True):
+    """Copy eligible content; media and text retain captions where supported."""
+    if not filter_message(message, content_filter, exclude_fun):
         return None
     if message.media:
         # Telethon can send most media using a Telegram media reference. Some
@@ -79,15 +75,14 @@ async def copy_message(client, message, target_chat, target_topic):
     return sent
 
 
-async def forward_and_record(client, db, message, source_chat, target_chat, target_topic):
+async def forward_and_record(client, db, message, source_chat, target_chat, target_topic, content_filter="photo_caption", exclude_fun=True):
     if already_sent(db, source_chat, message.id, target_chat, target_topic):
         return False
-    sent = await copy_message(client, message, target_chat, target_topic)
+    sent = await copy_message(client, message, target_chat, target_topic, content_filter, exclude_fun)
     if sent is None:
         return False
     sent_id = sent[0].id if isinstance(sent, list) else sent.id
-    db.execute("INSERT OR IGNORE INTO forwarded VALUES (?,?,?,?,?)", (source_chat, message.id, target_chat, target_topic, sent_id))
-    db.commit()
+    add_copy(db,source_chat,message.id,target_chat,target_topic,sent_id)
     return True
 
 
@@ -157,8 +152,8 @@ def controller_help():
 
 
 async def run_live():
+    # TOPIC_ROUTES seeds existing records only. SQLite is the durable config.
     mapping = routes()
-    diagnostic_only = os.environ.get("TG_DIAGNOSTIC_ONLY", "true").strip().lower() != "false"
     api_id = int(os.environ["API_ID"])
     api_hash = os.environ["API_HASH"]
     token = os.environ["BOT_TOKEN"]
@@ -167,11 +162,16 @@ async def run_live():
     Path(session_path).parent.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(session_path, api_id, api_hash)
     db = database()
-    locks = {}
+    # Any job left 'running' through a prior process restart was interrupted.
+    with db:
+        db.execute("UPDATE backup_runs SET status='interrupted',finished_at=?,error='Service restarted during job' WHERE status='running'",
+                   (int(time.time()),))
+    live_lock = asyncio.Lock()
     await client.start(bot_token=token)
     me = await client.get_me()
     log.info("Bot authenticated: id=%s username=%s", me.id, me.username)
-    log.info("DIAGNOSTIC ONLY=%s; monitoring %d topic route(s); no messages will be sent when enabled", diagnostic_only, len(mapping))
+    log.info("Runtime automatic forwarding switch=%s; TG_DIAGNOSTIC_ONLY is legacy configuration, not the runtime switch",
+             settings(db,"auto_forwarding","off"))
     for source, target in mapping.items():
         for kind, chat_id in (("source", source[0]), ("destination", target[0])):
             try:
@@ -182,92 +182,55 @@ async def run_live():
 
     allowed_controllers = controller_ids()
     jobs = BackupJobs()
-    pending_confirmation = {}
-    log.info("Private backup controller configured for %d authorized user(s); launches require explicit confirmation", len(allowed_controllers))
+    install(client,jobs,allowed_controllers)
+    log.info("Private controller active with %s authorized admins; forwarding=%s",
+             len(allowed_controllers),settings(db,"auto_forwarding","off"))
 
-    @client.on(events.NewMessage(incoming=True))
-    async def controller_dm(event):
-        if not event.is_private:
+    @client.on(events.NewMessage(incoming=True, chats=[SRC]))
+    async def auto_forward_message(event):
+        if settings(db,"auto_forwarding","off") != "on":
             return
-        raw_command = (event.raw_text or "").strip().split(maxsplit=1)
-        if raw_command and raw_command[0].split("@")[0].lower() == "/myid":
-            await event.respond("Your Telegram user ID: " + str(event.sender_id) + "\nPanel access requires explicit admin authorization.")
-            return
-        # Deny silently so no unauthorized user learns the configured routes.
-        if event.sender_id not in allowed_controllers:
-            return
-        msg = (event.raw_text or "").strip().split(maxsplit=1)
-        command = msg[0].split("@")[0].lower() if msg else ""
-        if command in ("/start", "/menu"):
-            await event.respond("🤖 Tegridy Backup Controller\nManual-only mode. Choose a menu option.", buttons=controller_menu())
-        elif command == "/status":
-            try:
-                await event.respond(controller_status(mapping) + "\n\n" + jobs.info(), buttons=controller_menu())
-            except Exception:
-                log.exception("Controller status read failed")
-                await event.respond("⚠️ Unable to read backup progress right now.")
-        elif command == "/help":
-            await event.respond(controller_help(), buttons=controller_menu())
-
-    @client.on(events.CallbackQuery())
-    async def controller_buttons(event):
-        if not event.is_private or event.sender_id not in allowed_controllers:
-            await event.answer("Not authorized.", alert=True)
-            return
-        data = event.data or b""
-        try:
-            if data == b"tg:status":
-                await event.edit(controller_status(mapping) + "\n\n" + jobs.info(), buttons=controller_menu())
-            elif data == b"tg:jobs":
-                await event.edit("📋 Manual backup jobs\n\n" + jobs.info() + "\n\n" + jobs.log_tail(1200), buttons=controller_menu())
-            elif data == b"tg:confirm":
-                pending_confirmation[event.sender_id] = time.monotonic() + 90
-                await event.edit(
-                    "⚠️ CONFIRM MANUAL BACKUP\n\n"
-                    "Touchdowns: resume the initial backup from SQLite (only photos with captions).\n"
-                    "Telegram Restrict Saving Content must ALREADY be disabled.\n"
-                    "Telegram may impose FloodWaits. A backup cannot bypass them.\n"
-                    "Click CONFIRM within 90 seconds to start sending.",
-                    buttons=[[Button.inline("✅ CONFIRM START", b"tg:launch"), Button.inline("↩️ Cancel", b"tg:cancel")]])
-            elif data == b"tg:launch":
-                valid_until = pending_confirmation.pop(event.sender_id, 0)
-                if time.monotonic() > valid_until:
-                    await event.answer("Confirmation expired; reopen Start.", alert=True)
-                    return
-                result = await jobs.start(client, event.sender_id)
-                await event.edit(result, buttons=controller_menu())
-            elif data == b"tg:stop":
-                await event.edit(await jobs.stop(), buttons=controller_menu())
-            elif data == b"tg:cancel":
-                pending_confirmation.pop(event.sender_id, None)
-                await event.edit("Cancelled; no backup started by this action.", buttons=controller_menu())
-            elif data == b"tg:help":
-                await event.edit(controller_help(), buttons=controller_menu())
-            else:
-                await event.answer("Unknown action.", alert=True)
-                return
-            await event.answer()
-        except Exception:
-            log.exception("Controller button failed")
-            await event.answer("Unable to load panel.", alert=True)
-
-    @client.on(events.NewMessage(chats=list({k[0] for k in mapping})))
-    async def on_message(event):
         topic = message_topic(event.message)
-        if diagnostic_only:
-            log.info("DRY EVENT chat=%s msg=%s topic=%s (NOT FORWARDED)", event.chat_id, event.message.id, topic)
+        if topic is None:
+            topic = 1  # General forum topic.
+        routes_now = [r for r in mappings(db) if
+                      r["source_chat"]==event.chat_id and r["source_topic"]==topic]
+        if not routes_now:
             return
-        destination = mapping.get((event.chat_id, topic))
-        if destination is None:
+        route=routes_now[0]
+        if not filter_message(event.message,route["filter"],bool(route["exclude_fun"])):
             return
-        # One lock per destination avoids duplicate sends during overlapping events.
-        lock = locks.setdefault(destination, asyncio.Lock())
-        async with lock:
+        if jobs.running():
+            log.warning("Skipping auto forward while manual job active: msg=%s",event.message.id)
+            return
+        async with live_lock:
+            if settings(db,"auto_forwarding","off")!="on":
+                return
+            lock_path=Path(os.getenv("BACKUP_DB_PATH","/data/tgforwarder/forwarded.sqlite3")).with_suffix(".batch.lock")
+            handle=open(lock_path,"a+")
             try:
-                if await forward_and_record(client, db, event.message, event.chat_id, *destination):
-                    log.info("Copied %s/%s topic=%s", event.chat_id, event.message.id, topic)
+                try:
+                    fcntl.flock(handle,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    log.warning("Manual backup holds lock; auto event deferred to next manual incremental: msg=%s",event.message.id)
+                    return
+                if already_sent(db,event.chat_id,event.message.id,route["target_chat"],route["target_topic"]):
+                    return
+                # Same 15-second rate pacing as manual sends.
+                await asyncio.sleep(15)
+                if settings(db,"auto_forwarding","off")!="on":
+                    return
+                if await forward_and_record(
+                        client,db,event.message,event.chat_id,
+                        route["target_chat"],route["target_topic"],
+                        content_filter=route["filter"],
+                        exclude_fun=bool(route["exclude_fun"])):
+                    log.info("AUTO COPIED topic=%s source_message=%s",topic,event.message.id)
             except Exception:
-                log.exception("Copy failed %s/%s; message not marked sent", event.chat_id, event.message.id)
+                log.exception("Automatic forwarding failed. Never bypass Telegram restrictions or FloodWait.")
+            finally:
+                fcntl.flock(handle,fcntl.LOCK_UN)
+                handle.close()
 
     try:
         await client.run_until_disconnected()
