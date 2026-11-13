@@ -1,0 +1,20 @@
+name: Tegridy backup offline checks
+on:
+  push:
+    branches: [tegridy-topic-backup]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Compile source files
+        run: python -m compileall -q tegridy_forwarder.py tegridy_batch.py tegridy_controller.py tegridy_state.py tegridy_topics.py tegridy_verify.py tegridy_ui.py
+      - name: Run offline smoke tests (never connects to Telegram)
+        run: python -m unittest discover -s tests -p 'test_tegridy_v2.py' -v
