@@ -75,6 +75,9 @@ async def discover():
         try:
             if not await client.is_user_authorized():
                 raise RuntimeError("Dedicated user session is not authorized")
+            me = await client.get_me()
+            if not me or me.bot or me.id != int(os.environ.get("EXPECTED_USER_ID", "9076133249")):
+                raise RuntimeError("Unexpected Telegram user account; refusing topic discovery")
             source = await fetch_topics(client, SRC)
             destination = await fetch_topics(client, DST)
         finally:
@@ -176,6 +179,9 @@ async def create_missing(source_topic):
         try:
             if not await client.is_user_authorized():
                 raise ValueError("Dedicated user is not authorized")
+            me = await client.get_me()
+            if not me or me.bot or me.id != int(os.environ.get("EXPECTED_USER_ID", "9076133249")):
+                raise RuntimeError("Unexpected Telegram user account; refusing topic creation")
             # Recheck actual current destination immediately before write.
             destinations=await fetch_topics(client,DST)
             source=await fetch_topics(client,SRC)
