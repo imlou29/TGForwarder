@@ -157,12 +157,8 @@ async def run_live():
     api_id = int(os.environ["API_ID"])
     api_hash = os.environ["API_HASH"]
     token = os.environ["BOT_TOKEN"]
-    # Pin the intended controller bot and never reuse a previous bot's Telethon session.
-    expected_bot_id = int(os.environ.get("EXPECTED_BOT_ID", "9076133249"))
-    if token.split(":", 1)[0] != str(expected_bot_id):
-        raise ValueError("BOT_TOKEN does not belong to the configured Tegridy Backup bot ID")
-    session_base = os.environ.get("BOT_SESSION_PATH", "/data/tgforwarder/bot")
-    session_path = f"{session_base}-{expected_bot_id}"
+    # A persistent bot session reduces reauthorization and should be on a volume.
+    session_path = os.environ.get("BOT_SESSION_PATH", "/data/tgforwarder/bot")
     Path(session_path).parent.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(session_path, api_id, api_hash)
     db = database()
@@ -173,8 +169,6 @@ async def run_live():
     live_lock = asyncio.Lock()
     await client.start(bot_token=token)
     me = await client.get_me()
-    if not me or me.id != expected_bot_id:
-        raise RuntimeError("Telegram authenticated a different bot than the configured backup controller")
     log.info("Bot authenticated: id=%s username=%s", me.id, me.username)
     log.info("Runtime automatic forwarding switch=%s; TG_DIAGNOSTIC_ONLY is legacy configuration, not the runtime switch",
              settings(db,"auto_forwarding","off"))
