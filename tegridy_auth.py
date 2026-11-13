@@ -20,6 +20,9 @@ async def main():
     try:
         await client.start()  # Secure interactive phone, code and optional 2FA prompts.
         me = await client.get_me()
+        expected_id = int(os.environ.get("EXPECTED_USER_ID", "9076133249"))
+        if not me or me.bot or me.id != expected_id:
+            raise RuntimeError("Wrong Telegram account authorized; expected dedicated backup user ID " + str(expected_id))
         print("AUTHORIZED Telegram user id:", me.id)
         print("Telegram username:", me.username or "(none)")
         print("Session saved on persistent volume; no session secret printed.")
