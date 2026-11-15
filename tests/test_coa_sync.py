@@ -1,0 +1,119 @@
+"""Network-free tests of real catalogue sync with a fake Telegram history."""
+import importlib.util
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
+
+from tegridy_coa_store import connect
+
+# Load the indexer with only its external Telegram adapters stubbed. This lets
+# the durable sync algorithm run on Windows too (production uses Linux fcntl).
+adapters = {}
+for name in ("dotenv", "telethon", "telethon.errors", "tegridy_topics"):
+    adapters[name] = ModuleType(name)
+adapters["dotenv"].load_dotenv = lambda: None
+adapters["telethon.errors"].FloodWaitError = type("FloodWaitError", (Exception,), {})
+adapters["tegridy_topics"].locked_user_session = lambda: None
+adapters["tegridy_topics"].user_client = lambda: None
+spec = importlib.util.spec_from_file_location("coa_sync_under_test", Path(__file__).resolve().parents[1] / "tegridy_coa_sync.py")
+sync = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, adapters):
+    spec.loader.exec_module(sync)
+
+CHAT = -1004350769620
+
+
+def message(mid, topic=85, text="Lobster RT10"):
+    return SimpleNamespace(id=mid, message=text, edit_date=None, photo=None,
+                           document=None, grouped_id=None, entities=[], action=None,
+                           date=datetime.now(timezone.utc),
+                           reply_to=SimpleNamespace(forum_topic=True, reply_to_top_id=topic))
+
+
+class Client:
+    def __init__(self, messages):
+        self.messages = messages
+    async def get_entity(self, chat):
+        return SimpleNamespace(noforwards=False)
+    async def get_messages(self, chat, ids=None, limit=None):
+        if ids is not None:
+            return next((m for m in self.messages if m.id == ids), None)
+        return sorted(self.messages, key=lambda m: m.id, reverse=True)[:limit]
+    async def iter_messages(self, chat, limit, reverse=False, min_id=0, max_id=10**12, reply_to=None):
+        rows = [m for m in self.messages if min_id < m.id < max_id and
+                (reply_to is None or m.reply_to.reply_to_top_id == reply_to)]
+        for m in sorted(rows, key=lambda m: m.id, reverse=not reverse)[:limit]:
+            yield m
+
+
+class SyncTests(unittest.TestCase):
+    def _callTestMethod(self, method):
+        # All fake Telegram methods finish synchronously. Drive these coroutines
+        # without an OS event-loop socket, so tests work in restricted sandboxes.
+        coroutine = method()
+        try:
+            coroutine.send(None)
+        except StopIteration:
+            return
+        finally:
+            coroutine.close()
+        self.fail("Unexpected real asynchronous I/O in an offline test")
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = connect(Path(self.tmp.name) / "coas.sqlite3")
+        self.db.execute("INSERT INTO sources(chat,topic,title) VALUES (?,85,'COAs')", (CHAT,))
+        self.db.commit()
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+    def source(self):
+        return self.db.execute("SELECT * FROM sources").fetchone()
+
+    async def test_paged_history_keeps_progress_and_never_leaks_other_topics(self):
+        client = Client([message(i) for i in range(100, 107)] + [message(110, topic=99)])
+        await sync.sync_source(self.db, client, self.source(), 2)
+        self.assertEqual(self.source()["cursor"], 101)
+        for _ in range(4):
+            await sync.sync_source(self.db, client, self.source(), 2)
+        self.assertGreater(self.source()["completed_at"], 0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone()[0], 7)
+        self.assertIsNone(self.db.execute("SELECT 1 FROM messages WHERE id=110").fetchone())
+
+    async def test_catches_more_new_posts_than_recent_window(self):
+        client = Client([message(100)])
+        await sync.sync_source(self.db, client, self.source(), 100)
+        client.messages.extend(message(i) for i in range(101, 145))
+        for _ in range(5):
+            await sync.sync_source(self.db, client, self.source(), 10)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone()[0], 45)
+        self.assertEqual(self.source()["recent_cursor"], 144)
+
+    async def test_daily_rescan_updates_edits_and_marks_deleted(self):
+        client = Client([message(100), message(101)])
+        await sync.sync_source(self.db, client, self.source(), 100)
+        client.messages = [message(100, text="YuanTai RT10 correction")]
+        self.db.execute("UPDATE sources SET completed_at=1")
+        self.db.commit()
+        await sync.sync_source(self.db, client, self.source(), 100)
+        self.assertEqual(self.db.execute("SELECT caption FROM messages WHERE id=100").fetchone()[0], "YuanTai RT10 correction")
+        self.assertEqual(self.db.execute("SELECT deleted FROM messages WHERE id=101").fetchone()[0], 1)
+
+    async def test_protected_image_never_downloaded(self):
+        m = message(100)
+        m.photo = SimpleNamespace(id=123)
+        text, status = await sync.extract_media(None, m, True)
+        self.assertEqual(status, "protected_media_not_downloaded")
+        self.assertEqual(text, "")
+
+    async def test_root_post_is_included(self):
+        client = Client([message(85)])
+        await sync.sync_source(self.db, client, self.source(), 100)
+        self.assertIsNotNone(self.db.execute("SELECT 1 FROM messages WHERE id=85").fetchone())
+
+
+if __name__ == "__main__":
+    unittest.main()
