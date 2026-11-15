@@ -2,7 +2,7 @@
 // node coa_lookup.mjs --gb Lobster --query RT10
 const args = process.argv.slice(2);
 const option = name => { const i = args.indexOf(name); return i < 0 ? "" : args[i + 1] || ""; };
-const gb = option("--gb").trim();
+const gb = (option("--gb") || option("--group-buy")).trim();
 const query = option("--query").trim();
 if (!gb) {
   console.log(JSON.stringify({status: "needs_gb", results: []}));
