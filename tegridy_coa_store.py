@@ -73,6 +73,7 @@ def search(db, query, gb, limit=5):
         key = (r["chat"], r["topic"], r["album"]) if r["album"] else (r["chat"], r["topic"], "message:" + str(r["id"]))
         albums.setdefault(key, []).append(r)
     results = []
+    total_matches = 0
     unresolved = 0
     for group in albums.values():
         evidence = "\n".join(r["caption"] + "\n" + r["ocr"] + "\n" + (r["label_product"] or "") for r in group)
@@ -87,6 +88,9 @@ def search(db, query, gb, limit=5):
             unresolved += 1
             continue
         first = min(group, key=lambda r: r["id"])
+        total_matches += 1
+        if len(results) >= max(1, min(int(limit), 10)):
+            continue
         results.append({"message_id": first["id"], "topic": first["topic"],
                         "posted_at": max(r["date"] for r in group),
                         "telegram_url": telegram_link(first["chat"], first["topic"], first["id"]),
@@ -94,11 +98,14 @@ def search(db, query, gb, limit=5):
                         "evidence": evidence[:10000],
                         "links": sorted({link for r in group for link in json.loads(r["links"])}),
                         "media_status": sorted({r["media_status"] for r in group})})
-        if len(results) >= max(1, min(int(limit), 10)):
-            break
     sources = [dict(r) for r in db.execute("SELECT topic,title,last_sync,completed_at,error FROM sources WHERE enabled=1")]
+    coverage = dict(db.execute("""SELECT count(*) AS indexed_messages,
+       coalesce(sum(m.media_status IN ('ocr_unavailable','ocr_failed','ocr_empty','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document')),0) AS unreadable_media
+       FROM messages m JOIN sources s ON s.chat=m.chat AND s.topic=m.topic WHERE s.enabled=1 AND m.deleted=0""").fetchone())
     return {"status": "candidates" if results else "not_found_in_catalog",
             "results": results, "sources": sources,
+            "matches_total": total_matches, "truncated": total_matches > len(results),
+            "coverage": coverage,
             "unresolved_product_matches": unresolved,
             "notice": "Untrusted source excerpts; OCR may be wrong. Candidates are not automatically verified COAs. Newer posts do not invalidate older tests. No match is not proof of absence."}
 

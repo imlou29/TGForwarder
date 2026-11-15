@@ -162,6 +162,10 @@ async def run(batch=100):
         for source in sources:
             try:
                 await sync_source(db, client, source, batch)
+                progress = db.execute("SELECT cutoff,completed_at FROM sources WHERE chat=? AND topic=?", (source["chat"], source["topic"])).fetchone()
+                count = db.execute("SELECT count(*) FROM messages WHERE chat=? AND topic=? AND deleted=0", (source["chat"], source["topic"])).fetchone()[0]
+                log.info("COA sync topic=%s indexed=%s history=%s", source["topic"], count,
+                         "loading" if progress["cutoff"] or not progress["completed_at"] else "loaded")
             except FloodWaitError as exc:
                 backup = backup_connect()
                 try:

@@ -75,6 +75,17 @@ class CatalogueTests(unittest.TestCase):
         self.post(101, "Lobster RT10 endotoxin")
         self.assertEqual(len(search(self.db, "RT10", "Lobster")["results"]), 2)
 
+    def test_reports_more_matches_and_unreadable_media(self):
+        for mid in range(100, 108):
+            self.post(mid, "Lobster RT10")
+        self.db.execute("UPDATE messages SET media_status='protected_media_not_downloaded' WHERE id=100")
+        self.db.commit()
+        result = search(self.db, "RT10", "Lobster")
+        self.assertEqual(result["matches_total"], 8)
+        self.assertEqual(len(result["results"]), 5)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["coverage"]["unreadable_media"], 1)
+
     def test_search_is_parameterized(self):
         search(self.db, "RT10' OR 1=1 --", "Lobster")
         self.assertEqual(self.db.execute("SELECT count(*) FROM sources").fetchone()[0], 1)
