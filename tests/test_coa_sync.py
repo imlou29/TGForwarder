@@ -109,6 +109,32 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(status, "protected_media_not_downloaded")
         self.assertEqual(text, "")
 
+    async def test_protected_pdf_never_downloaded(self):
+        m = message(100)
+        m.document = SimpleNamespace(id=123, mime_type="application/pdf")
+        text, status = await sync.extract_media(None, m, True)
+        self.assertEqual((text, status), ("", "protected_media_not_downloaded"))
+
+    async def test_existing_unsupported_pdf_is_retried(self):
+        m = message(100)
+        m.document = SimpleNamespace(id=123, mime_type="application/pdf")
+        self.db.execute("INSERT INTO messages VALUES (?,100,85,'',100,?,'','','unsupported_document','[]',1,0)", (CHAT, sync.fingerprint(m)))
+        self.db.commit()
+        async def extract(*args):
+            return "PDF report RT10", "pdf_text"
+        with patch.object(sync, "extract_media", extract):
+            await sync.save_message(self.db, None, self.source(), m, 2, False)
+        self.assertEqual(self.db.execute("SELECT media_status,ocr FROM messages").fetchone()[0], "pdf_text")
+
+    async def test_opening_read_window_retries_historical_files(self):
+        client = Client([message(100), message(101)])
+        self.db.execute("INSERT INTO state VALUES (?, '1')", (f"protection:{CHAT}:85",))
+        self.db.execute("UPDATE sources SET completed_at=?,recent_cursor=101", (int(datetime.now(timezone.utc).timestamp()),))
+        self.db.commit()
+        await sync.sync_source(self.db, client, self.source(), 100)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone()[0], 2)
+        self.assertEqual(self.db.execute("SELECT value FROM state WHERE key=?", (f"protection:{CHAT}:85",)).fetchone()[0], "0")
+
     async def test_root_post_is_included(self):
         client = Client([message(85)])
         await sync.sync_source(self.db, client, self.source(), 100)

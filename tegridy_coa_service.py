@@ -93,9 +93,10 @@ def panel():
             last = time.strftime("%d %b %H:%M UTC", time.gmtime(s["last_sync"])) if s["last_sync"] else "not yet"
             lines.append(f"\n{s['title']} ({s['topic']}) · {state}\nLast sync: {last}" + ("\n" + s["error"] if s["error"] else ""))
             coverage = db.execute("""SELECT count(*),coalesce(sum(media_status='ocr_text'),0),
-                coalesce(sum(media_status IN ('ocr_empty','ocr_failed','ocr_unavailable','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document')),0)
+                coalesce(sum(media_status IN ('ocr_empty','ocr_failed','ocr_unavailable','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document','pdf_tools_unavailable','pdf_restricted','pdf_failed','pdf_empty','pdf_too_large')),0),
+                coalesce(sum(media_status IN ('pdf_text','pdf_ocr_text')),0),coalesce(sum(media_status='pdf_partial'),0)
                 FROM messages WHERE chat=? AND topic=? AND deleted=0""", (s["chat"], s["topic"])).fetchone()
-            lines.append(f"Posts: {coverage[0]} · Images read: {coverage[1]} · Unreadable/protected media: {coverage[2]}")
+            lines.append(f"Posts: {coverage[0]} · Images read: {coverage[1]} · PDFs read: {coverage[3]}\nUnreadable/protected media: {coverage[2]} · Partial PDFs: {coverage[4]}")
         if not sources:
             lines.append("\nChoose the COA topic to begin. No topic is selected automatically.")
         lines.append("\nImages use OCR when content can be downloaded. Unreadable or unlabelled posts may need an admin label.")

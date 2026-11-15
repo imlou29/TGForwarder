@@ -34,29 +34,85 @@ def fingerprint(message):
     return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
 
-def ocr_file(path):
+def ocr_file(path, timeout=45):
     result = subprocess.run(["tesseract", str(path), "stdout", "-l", "eng+spa", "--psm", "11"],
-                            capture_output=True, timeout=45, check=True)
+                            capture_output=True, timeout=timeout, check=True,
+                            env={**os.environ, "OMP_THREAD_LIMIT": "1"})
     return result.stdout.decode("utf-8", errors="replace")[:30000]
+
+
+def extract_pdf(path):
+    """Bounded local PDF text extraction with per-page OCR fallback."""
+    if not all(shutil.which(tool) for tool in ("pdfinfo", "pdftotext", "pdftoppm", "tesseract")):
+        return "", "pdf_tools_unavailable"
+    try:
+        info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=15,
+                              check=True, env={**os.environ, "LC_ALL": "C"}).stdout.decode("utf-8", errors="replace")
+        if re.search(r"^Encrypted:\s+yes", info, re.M | re.I):
+            return "", "pdf_restricted"
+        match = re.search(r"^Pages:\s+(\d+)", info, re.M)
+        if not match:
+            return "", "pdf_failed"
+        pages = int(match.group(1))
+    except (subprocess.SubprocessError, OSError):
+        return "", "pdf_failed"
+    chunks = []
+    partial = pages > 6
+    used_ocr = False
+    deadline = time.monotonic() + 75
+    with tempfile.TemporaryDirectory(prefix="coa-pdf-") as folder:
+        for page in range(1, min(pages, 6) + 1):
+            if deadline - time.monotonic() < 2:
+                partial = True
+                break
+            try:
+                native = subprocess.run(["pdftotext", "-f", str(page), "-l", str(page), "-layout", str(path), "-"],
+                                        capture_output=True, timeout=min(15, max(1, deadline-time.monotonic())), check=True).stdout.decode("utf-8", errors="replace").strip()
+                if native:
+                    chunks.append(f"PDF page {page} text:\n" + native)
+                # A short text layer can be just a footer on a scanned report.
+                if len(re.findall(r"[A-Za-z0-9]", native)) < 80:
+                    prefix = Path(folder) / ("page-" + str(page))
+                    subprocess.run(["pdftoppm", "-f", str(page), "-l", str(page), "-scale-to", "2200", "-singlefile", "-png", str(path), str(prefix)],
+                                   capture_output=True, timeout=min(20, max(1, deadline-time.monotonic())), check=True)
+                    text = ocr_file(str(prefix) + ".png", timeout=min(30, max(1, deadline-time.monotonic())))
+                    used_ocr = True
+                    if text.strip():
+                        chunks.append(f"PDF page {page} OCR (unverified):\n" + text.strip())
+                    elif not native:
+                        partial = True
+            except (subprocess.SubprocessError, OSError):
+                partial = True
+    text = "\n\n".join(chunks)
+    if not text.strip():
+        return "", "pdf_empty"
+    if partial or len(text) > 30000:
+        return text[:30000], "pdf_partial"
+    return text, "pdf_ocr_text" if used_ocr else "pdf_text"
 
 
 async def extract_media(client, message, protected):
     image = bool(message.photo) or bool(message.document and (message.document.mime_type or "").startswith("image/"))
-    if not image:
+    pdf = bool(message.document and (message.document.mime_type or "").lower() == "application/pdf")
+    if not image and not pdf:
         return "", "link_or_text" if not message.document else "unsupported_document"
     if protected or getattr(message, "noforwards", False):
         return "", "protected_media_not_downloaded"
-    if not shutil.which("tesseract"):
+    if pdf and not all(shutil.which(tool) for tool in ("pdfinfo", "pdftotext", "pdftoppm", "tesseract")):
+        return "", "pdf_tools_unavailable"
+    if image and not shutil.which("tesseract"):
         return "", "ocr_unavailable"
     if getattr(message.file, "size", 0) and message.file.size > 15 * 1024 * 1024:
-        return "", "image_too_large"
+        return "", "pdf_too_large" if pdf else "image_too_large"
     with tempfile.TemporaryDirectory(prefix="coa-") as folder:
         path = await client.download_media(message, file=folder + "/")
         if not path:
             return "", "download_unavailable"
         if Path(path).stat().st_size > 15 * 1024 * 1024:
-            return "", "image_too_large"
+            return "", "pdf_too_large" if pdf else "image_too_large"
         try:
+            if pdf:
+                return await asyncio.to_thread(extract_pdf, path)
             text = await asyncio.to_thread(ocr_file, path)
             return text, "ocr_text" if text.strip() else "ocr_empty"
         except (subprocess.SubprocessError, OSError):
@@ -68,7 +124,8 @@ async def save_message(db, client, source, message, generation, protected):
         return
     old = db.execute("SELECT fingerprint,ocr,media_status FROM messages WHERE chat=? AND id=?", (source["chat"], message.id)).fetchone()
     fp = fingerprint(message)
-    retry = old and old["media_status"] in ("ocr_unavailable", "ocr_failed", "download_unavailable", "protected_media_not_downloaded")
+    retry = old and (old["media_status"] in ("ocr_unavailable", "ocr_failed", "ocr_empty", "download_unavailable", "protected_media_not_downloaded", "pdf_tools_unavailable", "pdf_failed", "pdf_empty")
+                     or (old["media_status"] == "unsupported_document" and message.document and message.document.mime_type == "application/pdf"))
     if old and old["fingerprint"] == fp and not retry:
         with db:
             db.execute("UPDATE messages SET generation=?,deleted=0 WHERE chat=? AND id=?", (generation, source["chat"], message.id))
@@ -95,19 +152,38 @@ async def sync_source(db, client, source, batch):
     chat, topic = source["chat"], source["topic"]
     entity = await client.get_entity(chat)
     protected = bool(getattr(entity, "noforwards", False))
+    protection_key = f"protection:{chat}:{topic}"
+    prior_protection = db.execute("SELECT value FROM state WHERE key=?", (protection_key,)).fetchone()
+    if prior_protection and prior_protection[0] == "1" and not protected:
+        # Opening an authorized read window retries old protected files, not just
+        # the newest posts. Only catalogue scan cursors change; never receipts.
+        with db:
+            db.execute("UPDATE sources SET completed_at=0,cutoff=0,cursor=0 WHERE chat=? AND topic=?", (chat, topic))
+        source = db.execute("SELECT * FROM sources WHERE chat=? AND topic=?", (chat, topic)).fetchone()
+    with db:
+        db.execute("INSERT OR REPLACE INTO state VALUES (?,?)", (protection_key, "1" if protected else "0"))
     kwargs = {} if topic == 1 else {"reply_to": topic}
     # Keep recent posts available while the historical pass is still in progress.
     recent_options = {"reverse": True, "min_id": source["recent_cursor"], "limit": batch} if source["recent_cursor"] else {"limit": 30}
     highwater = source["recent_cursor"]
+    recent_started = time.monotonic()
+    recent_budget_hit = False
     async for message in client.iter_messages(chat, **recent_options, **kwargs):
         await save_message(db, client, source, message, source["generation"], protected)
         highwater = max(highwater, message.id)
         if source["recent_cursor"]:
             with db:
                 db.execute("UPDATE sources SET recent_cursor=? WHERE chat=? AND topic=?", (highwater, chat, topic))
+        if time.monotonic() - recent_started >= 180:
+            recent_budget_hit = True
+            break
     with db:
         db.execute("UPDATE sources SET recent_cursor=? WHERE chat=? AND topic=?", (highwater, chat, topic))
     now = int(time.time())
+    if recent_budget_hit:
+        with db:
+            db.execute("UPDATE sources SET last_sync=?,error='' WHERE chat=? AND topic=?", (now, chat, topic))
+        return
     if not source["cutoff"]:
         if source["completed_at"] and now - source["completed_at"] < 86400:
             with db:
@@ -124,13 +200,18 @@ async def sync_source(db, client, source, batch):
         if root:
             await save_message(db, client, source, root, source["generation"], protected)
     count = 0
+    started = time.monotonic()
+    budget_hit = False
     async for message in client.iter_messages(chat, reverse=True, min_id=source["cursor"], max_id=source["cutoff"] + 1, limit=batch, **kwargs):
         await save_message(db, client, source, message, source["generation"], protected)
         with db:
             db.execute("UPDATE sources SET cursor=? WHERE chat=? AND topic=?", (message.id, chat, topic))
         count += 1
+        if time.monotonic() - started >= 240:
+            budget_hit = True
+            break
     with db:
-        if count < batch:
+        if count < batch and not budget_hit:
             # A complete frozen historical pass also marks deleted old posts.
             db.execute("UPDATE messages SET deleted=1 WHERE chat=? AND topic=? AND id<=? AND generation<>?", (chat, topic, source["cutoff"], source["generation"]))
             db.execute("UPDATE sources SET cutoff=0,cursor=0,completed_at=? WHERE chat=? AND topic=?", (now, chat, topic))
@@ -148,6 +229,11 @@ async def run(batch=100):
                 return
         finally:
             backup.close()
+        version = db.execute("SELECT value FROM state WHERE key='extractor_version'").fetchone()
+        if not version or version[0] != "pdf-v1":
+            with db:
+                db.execute("UPDATE sources SET completed_at=0,cutoff=0,cursor=0 WHERE enabled=1")
+                db.execute("INSERT OR REPLACE INTO state VALUES ('extractor_version','pdf-v1')")
         sources = db.execute("SELECT * FROM sources WHERE enabled=1").fetchall()
         wait = db.execute("SELECT value FROM state WHERE key='retry_after'").fetchone()
         if not sources or (wait and int(wait[0]) > time.time()):

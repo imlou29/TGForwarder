@@ -25,9 +25,15 @@ The dedicated user ID must match `EXPECTED_USER_ID`. No Telegram messages are
 sent by the indexer. Telegram FloodWait stops work until the deadline expires.
 
 Images are downloaded temporarily and passed to local Tesseract English/Spanish
-OCR. The Dockerfile provides Tesseract. No image is sent to an external OCR
+OCR. PDFs use local Poppler text extraction, with OCR for pages with a short or
+missing text layer. The Dockerfile provides Poppler and Tesseract. No file is sent to an external OCR
 provider and temporary files are removed. Images over 15 MiB, protected media,
-unreadable images and non-image documents remain marked with their limitation.
+unreadable images and unsupported documents remain marked with their limitation.
+PDF processing is capped at six pages and 75 seconds after metadata reading;
+partial PDFs are explicitly marked. Encrypted PDFs are not processed. An update
+to the extractor rechecks existing catalogue records without touching backup
+receipts. When group protection is later removed by an authorized admin, the
+next sync restarts the COA scan to retry historical protected files.
 Captions, clickable URLs, album membership and the original Telegram message
 link are retained. External laboratory links are retained as source links;
 their pages are not automatically crawled. The raw image is not served by the API.
