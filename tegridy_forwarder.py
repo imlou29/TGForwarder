@@ -183,6 +183,8 @@ async def run_live():
     allowed_controllers = controller_ids()
     jobs = BackupJobs()
     install(client,jobs,allowed_controllers)
+    from tegridy_coa_service import start as start_coas
+    coa_task, coa_server = start_coas(client, jobs, allowed_controllers)
     log.info("Private controller active with %s authorized admins; forwarding=%s",
              len(allowed_controllers),settings(db,"auto_forwarding","off"))
 
@@ -235,9 +237,17 @@ async def run_live():
     try:
         await client.run_until_disconnected()
     finally:
+        coa_task.cancel()
+        try:
+            await coa_task
+        except asyncio.CancelledError:
+            pass
+        if coa_server:
+            await asyncio.to_thread(coa_server.shutdown)
         db.close()
         await client.disconnect()
 
 
 if __name__ == "__main__":
     asyncio.run(run_live())
+

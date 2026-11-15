@@ -28,6 +28,7 @@ def menu(db):
         [Button.inline("▶️ Start / Resume",b"tg:confirm"),Button.inline("🛑 Stop",b"tg:stop")],
         [Button.inline("📂 Topics / Select",b"tg:topics"),Button.inline("🔄 Sync Topics",b"tg:scan")],
         [Button.inline("⚡ Auto Forwarding: "+auto.upper(),b"tg:auto")],
+        [Button.inline("COA catalogue", b"coa:menu")],
         [Button.inline("⚙️ Filters",b"tg:filters"),Button.inline("ℹ️ Help",b"tg:help")]
     ]
 
@@ -164,7 +165,6 @@ def install(client,jobs,authorized):
             return
         data=(event.data or b"").decode("utf-8",errors="replace")
         if not data.startswith("tg:"):
-            await event.answer("Unknown action",alert=True)
             return
         parts=data.split(":")
         action=parts[1]
@@ -338,3 +338,4 @@ def help_text():
             "Manual backups use a 15-second pre-send delay and stop for Telegram FloodWait.\n"
             "Do not disable Telegram Restrict Saving Content outside authorized backup windows.\n"
             "Only users explicitly authorized in TG_CONTROLLER_IDS can operate these controls.")
+
