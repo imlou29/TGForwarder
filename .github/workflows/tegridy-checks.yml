@@ -1,7 +1,9 @@
 name: Tegridy backup offline checks
 on:
   push:
-    branches: [tegridy-topic-backup, coa-telegram-catalog]
+    branches: [tegridy-topic-backup]
+  pull_request:
+    branches: [tegridy-topic-backup]
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,6 +16,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt
+      - name: Install local PDF/OCR integration test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa poppler-utils fonts-dejavu-core
+          python -m pip install pillow reportlab
       - name: Compile source files
         run: python -m compileall -q .
       - name: Run offline smoke tests (never connects to Telegram)

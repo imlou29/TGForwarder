@@ -100,7 +100,7 @@ def search(db, query, gb, limit=5):
                         "media_status": sorted({r["media_status"] for r in group})})
     sources = [dict(r) for r in db.execute("SELECT topic,title,last_sync,completed_at,error FROM sources WHERE enabled=1")]
     coverage = dict(db.execute("""SELECT count(*) AS indexed_messages,
-       coalesce(sum(m.media_status IN ('ocr_unavailable','ocr_failed','ocr_empty','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document')),0) AS unreadable_media
+       coalesce(sum(m.media_status IN ('ocr_unavailable','ocr_failed','ocr_empty','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document','pdf_tools_unavailable','pdf_restricted','pdf_failed','pdf_empty','pdf_too_large','pdf_partial')),0) AS unreadable_media
        FROM messages m JOIN sources s ON s.chat=m.chat AND s.topic=m.topic WHERE s.enabled=1 AND m.deleted=0""").fetchone())
     return {"status": "candidates" if results else "not_found_in_catalog",
             "results": results, "sources": sources,
