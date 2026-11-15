@@ -51,6 +51,32 @@ not found in the current catalogue, not proof a COA does not exist. Multiple
 tests stay separate; recency is not automatic supersession. Review excerpts
 against their original Telegram post before asserting numerical lab results.
 
+## Original-file intake while the group stays protected
+
+Existing authorized admins can send `/coa_import` to the private backup bot.
+Supply an original PDF/image with caption `GB | product | original Telegram
+message link` (or the original message ID instead of the link). The original
+post must already exist in an enabled source topic. Source links are validated
+against the configured group and indexed topic. No GB/product inference occurs.
+
+The bot processes the privately supplied original locally, stores extracted
+text plus a SHA-256 digest and uploader audit metadata in `media_imports`, and
+discards temporary working files. The original remains in the private Telegram
+conversation. Files are never resent to the source or backup groups. Only the
+existing admin allowlist can import; no additional admin rights are granted.
+Protected Telegram attachments are not downloaded through this route.
+
+Import evidence is separate from synchronized Telegram content, so later syncs
+do not erase it. Results retain the original group-post link and explicitly
+identify the evidence as an admin-supplied original. Matching the supplied file
+to the original post is the admin's assertion, not independent file-equivalence
+verification. Conflicting GB/product labels are rejected. Duplicate files for
+the same original post do not create duplicate records. `/coa_remove import_id`
+soft-disables an erroneous import; labels can be corrected with `/coa_label`.
+
+Only PDFs/images up to 15 MiB are accepted. Each file needs its own caption;
+ZIP/bulk manifests are not supported. Start by checking one file end-to-end.
+
 ## Private search connection
 
 Set a random `COA_API_TOKEN` of at least 32 characters on TGForwarder and OpenClaw.

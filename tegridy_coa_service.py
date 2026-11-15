@@ -88,6 +88,8 @@ def panel():
         total = db.execute("SELECT count(*) FROM messages WHERE deleted=0").fetchone()[0]
         lines = ["COA catalogue", f"Indexed messages: {total}",
                  "Reads selected source topics; does not forward posts."]
+        supplied = db.execute("SELECT count(*) FROM media_imports WHERE enabled=1").fetchone()[0]
+        lines.append(f"Privately supplied originals: {supplied} · /coa_import for instructions")
         for s in sources:
             state = "history loading" if s["cutoff"] or not s["completed_at"] else "history loaded"
             last = time.strftime("%d %b %H:%M UTC", time.gmtime(s["last_sync"])) if s["last_sync"] else "not yet"
@@ -101,6 +103,7 @@ def panel():
             lines.append("\nChoose the COA topic to begin. No topic is selected automatically.")
         lines.append("\nImages use OCR when content can be downloaded. Unreadable or unlabelled posts may need an admin label.")
         return "\n".join(lines), [[Button.inline("Choose source topics", b"coa:topics:0")],
+                                  [Button.inline("Import originals", b"coa:import")],
                                   [Button.inline("Refresh", b"coa:menu"), Button.inline("Backup menu", b"tg:menu")]]
     finally:
         db.close()
@@ -160,6 +163,10 @@ def install_controls(client, authorized):
             text, buttons = topic_panel(page)
         elif parts[1] == "topics":
             text, buttons = topic_panel(max(0, int(parts[2])))
+        elif parts[1] == "import":
+            from telethon import Button
+            from tegridy_coa_intake import HELP
+            text, buttons = HELP, [[Button.inline("Catalogue", b"coa:menu")]]
         else:
             text, buttons = panel()
         from telethon.errors import MessageNotModifiedError
@@ -190,6 +197,8 @@ def install_controls(client, authorized):
 
 def start(client, jobs, authorized):
     install_controls(client, authorized)
+    from tegridy_coa_intake import install as install_intake
+    install_intake(client, authorized)
     token = os.getenv("COA_API_TOKEN", "")
     server = None
     if len(token) >= 32:
