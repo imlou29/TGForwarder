@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from tegridy_coa_store import connect, label, search
+from tegridy_coa_scope import mode as source_mode, paused as source_paused, set_mode, set_paused, seed, has_lab_link
 
 log = logging.getLogger("tegridy-coas")
 
@@ -92,8 +93,15 @@ def panel():
         lines.append(f"Privately supplied originals: {supplied} · /coa_import for instructions")
         registered = db.execute("SELECT count(*) FROM report_links WHERE enabled=1").fetchone()[0]
         lines.append(f"Registered lab links: {registered} · /coa_links for batch registration")
+        controls = []
         for s in sources:
             state = "history loading" if s["cutoff"] or not s["completed_at"] else "history loaded"
+            paused_now = source_paused(db, s["chat"], s["topic"])
+            current_mode = source_mode(db, s["chat"], s["topic"])
+            if paused_now:
+                state = "PAUSED"
+            elif current_mode == "recent_links":
+                state = "recent links only (last 200 posts)"
             last = time.strftime("%d %b %H:%M UTC", time.gmtime(s["last_sync"])) if s["last_sync"] else "not yet"
             lines.append(f"\n{s['title']} ({s['topic']}) · {state}\nLast sync: {last}" + ("\n" + s["error"] if s["error"] else ""))
             coverage = db.execute("""SELECT count(*),coalesce(sum(media_status='ocr_text'),0),
@@ -101,10 +109,17 @@ def panel():
                 coalesce(sum(media_status IN ('pdf_text','pdf_ocr_text')),0),coalesce(sum(media_status='pdf_partial'),0)
                 FROM messages WHERE chat=? AND topic=? AND deleted=0""", (s["chat"], s["topic"])).fetchone()
             lines.append(f"Posts: {coverage[0]} · Images read: {coverage[1]} · PDFs read: {coverage[3]}\nUnreadable/protected media: {coverage[2]} · Partial PDFs: {coverage[4]}")
+            if current_mode == "recent_links":
+                eligible = sum(has_lab_link(r[0]) for r in db.execute("SELECT links FROM messages WHERE chat=? AND topic=? AND deleted=0", (s["chat"], s["topic"])))
+                lines.append(f"Lab-link posts stored: {eligible}. Old records retained; ordinary updates excluded from lookup.")
+            title = s["title"][:18]
+            controls.append([Button.inline(("Resume " if paused_now else "Pause ") + title, f"coa:pause:{s['topic']}".encode())])
+            controls.append([Button.inline("Recent lab links", f"coa:mode:{s['topic']}:recent_links".encode()),
+                             Button.inline("Full history", f"coa:mode:{s['topic']}:full".encode())])
         if not sources:
             lines.append("\nChoose the COA topic to begin. No topic is selected automatically.")
         lines.append("\nImages use OCR when content can be downloaded. Unreadable or unlabelled posts may need an admin label.")
-        return "\n".join(lines), [[Button.inline("Choose source topics", b"coa:topics:0")],
+        return "\n".join(lines), controls + [[Button.inline("Choose source topics", b"coa:topics:0")],
                                   [Button.inline("Import originals", b"coa:import")],
                                   [Button.inline("Refresh", b"coa:menu"), Button.inline("Backup menu", b"tg:menu")]]
     finally:
@@ -147,7 +162,21 @@ def install_controls(client, authorized):
             return
         await event.answer()
         parts = event.data.decode().split(":")
-        if parts[1] == "toggle":
+        if parts[1] in ("pause", "mode"):
+            topic = int(parts[2])
+            db = connect()
+            try:
+                if not db.execute("SELECT 1 FROM sources WHERE chat=? AND topic=?", (SRC, topic)).fetchone():
+                    return
+                if parts[1] == "pause":
+                    set_paused(db, SRC, topic, not source_paused(db, SRC, topic))
+                    log.info("COA source topic=%s paused=%s", topic, source_paused(db, SRC, topic))
+                else:
+                    set_mode(db, SRC, topic, parts[3])
+            finally:
+                db.close()
+            text, buttons = panel()
+        elif parts[1] == "toggle":
             topic, page = int(parts[2]), max(0, int(parts[3]))
             source = backup_connect()
             try:
@@ -198,6 +227,15 @@ def install_controls(client, authorized):
 
 
 def start(client, jobs, authorized):
+    from tegridy_state import SRC
+    db = connect()
+    try:
+        seed(db, SRC, os.getenv("COA_INITIAL_PAUSE_TOPICS", ""), os.getenv("COA_RECENT_LINK_TOPICS", ""))
+        for source in db.execute("SELECT chat,topic,enabled FROM sources"):
+            log.info("COA source topic=%s enabled=%s paused=%s mode=%s", source["topic"], bool(source["enabled"]),
+                     source_paused(db, source["chat"], source["topic"]), source_mode(db, source["chat"], source["topic"]))
+    finally:
+        db.close()
     install_controls(client, authorized)
     from tegridy_coa_intake import install as install_intake
     install_intake(client, authorized)

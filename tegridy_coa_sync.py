@@ -17,8 +17,28 @@ from telethon.errors import FloodWaitError
 from tegridy_topics import locked_user_session, user_client
 from tegridy_coa_store import connect
 from tegridy_state import connect as backup_connect, settings, set_setting
+from tegridy_coa_scope import paused, mode, has_lab_link
 
 log = logging.getLogger("tegridy-coas")
+
+
+class SourcePaused(RuntimeError):
+    pass
+
+
+def ensure_active(db, source):
+    row = db.execute("SELECT enabled FROM sources WHERE chat=? AND topic=?", (source["chat"], source["topic"])).fetchone()
+    if not row or not row[0] or paused(db, source["chat"], source["topic"]):
+        raise SourcePaused("Catalogue source is paused or disabled")
+
+
+def message_links(message):
+    links = re.findall(r"https?://[^\s<>]+", message.message or "")
+    for entity in message.entities or []:
+        url = getattr(entity, "url", "")
+        if url.startswith(("https://", "http://")):
+            links.append(url)
+    return sorted(set(links))
 
 
 def in_topic(message, topic):
@@ -119,7 +139,8 @@ async def extract_media(client, message, protected):
             return "", "ocr_failed"
 
 
-async def save_message(db, client, source, message, generation, protected):
+async def save_message(db, client, source, message, generation, protected, metadata_only=False):
+    ensure_active(db, source)
     if not in_topic(message, source["topic"]) or getattr(message, "action", None):
         return
     old = db.execute("SELECT fingerprint,ocr,media_status FROM messages WHERE chat=? AND id=?", (source["chat"], message.id)).fetchone()
@@ -130,13 +151,12 @@ async def save_message(db, client, source, message, generation, protected):
         with db:
             db.execute("UPDATE messages SET generation=?,deleted=0 WHERE chat=? AND id=?", (generation, source["chat"], message.id))
         return
-    text, status = await extract_media(client, message, protected)
+    if metadata_only:
+        text, status = (old["ocr"], old["media_status"]) if old and old["fingerprint"] == fp else ("", "link_metadata_only")
+    else:
+        text, status = await extract_media(client, message, protected)
     caption = (message.message or "")[:30000]
-    links = re.findall(r"https?://[^\s<>]+", caption)
-    for entity in message.entities or []:
-        url = getattr(entity, "url", "")
-        if url.startswith(("https://", "http://")):
-            links.append(url)
+    links = message_links(message)
     with db:
         db.execute("""INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?,0)
           ON CONFLICT(chat,id) DO UPDATE SET topic=excluded.topic,album=excluded.album,
@@ -148,7 +168,27 @@ async def save_message(db, client, source, message, generation, protected):
            json.dumps(sorted(set(links))), generation))
 
 
+async def sync_recent_links(db, client, source):
+    """Only inspect the newest 200 posts; never traverse older history or media."""
+    kwargs = {} if source["topic"] == 1 else {"reply_to": source["topic"]}
+    highest = source["recent_cursor"]
+    async for message in client.iter_messages(source["chat"], limit=200, **kwargs):
+        ensure_active(db, source)
+        if not in_topic(message, source["topic"]):
+            continue
+        highest = max(highest, message.id)
+        if has_lab_link(message_links(message)):
+            await save_message(db, client, source, message, source["generation"], True, metadata_only=True)
+    ensure_active(db, source)
+    now = int(time.time())
+    with db:
+        db.execute("UPDATE sources SET cutoff=0,cursor=0,completed_at=?,last_sync=?,recent_cursor=?,error='' WHERE chat=? AND topic=?", (now, now, highest, source["chat"], source["topic"]))
+
+
 async def sync_source(db, client, source, batch):
+    ensure_active(db, source)
+    if mode(db, source["chat"], source["topic"]) == "recent_links":
+        return await sync_recent_links(db, client, source)
     chat, topic = source["chat"], source["topic"]
     entity = await client.get_entity(chat)
     protected = bool(getattr(entity, "noforwards", False))
@@ -234,7 +274,7 @@ async def run(batch=100):
             with db:
                 db.execute("UPDATE sources SET completed_at=0,cutoff=0,cursor=0 WHERE enabled=1")
                 db.execute("INSERT OR REPLACE INTO state VALUES ('extractor_version','pdf-v1')")
-        sources = db.execute("SELECT * FROM sources WHERE enabled=1").fetchall()
+        sources = [s for s in db.execute("SELECT * FROM sources WHERE enabled=1").fetchall() if not paused(db, s["chat"], s["topic"])]
         wait = db.execute("SELECT value FROM state WHERE key='retry_after'").fetchone()
         if not sources or (wait and int(wait[0]) > time.time()):
             return
@@ -252,6 +292,8 @@ async def run(batch=100):
                 count = db.execute("SELECT count(*) FROM messages WHERE chat=? AND topic=? AND deleted=0", (source["chat"], source["topic"])).fetchone()[0]
                 log.info("COA sync topic=%s indexed=%s history=%s", source["topic"], count,
                          "loading" if progress["cutoff"] or not progress["completed_at"] else "loaded")
+            except SourcePaused:
+                log.info("COA sync paused topic=%s; existing records preserved", source["topic"])
             except FloodWaitError as exc:
                 backup = backup_connect()
                 try:

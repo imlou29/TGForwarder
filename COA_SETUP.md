@@ -6,6 +6,25 @@ data/config/session backup before implementation.
 
 ## Data and controls
 
+### Pause and bound a source without changing backups
+
+Each enabled source has a Pause/Resume button and a Full history / Recent lab
+links mode. Pause is checked between messages, including during an active batch;
+an in-flight Telegram request may finish. Existing records remain searchable.
+Turning a source OFF in Choose source topics additionally excludes it from lookup.
+
+Recent lab links examines only the newest 200 posts per cycle and stores only
+posts with recognized lab-host URLs (Chromate, Janoshik or Verified by Vanguard).
+It never downloads images or PDFs, and does not follow the historical cursor.
+Older records are retained; ordinary old updates are excluded from lookup in
+this mode. Lab links and supplied originals remain eligible. This bounded window
+can miss posts older than the newest 200; it is not a complete-history claim.
+
+`COA_INITIAL_PAUSE_TOPICS` and `COA_RECENT_LINK_TOPICS` accept comma-separated
+source topic IDs as one-time defaults. They seed only missing per-source state
+and never override a later explicit choice in the private admin panel. These
+controls do not modify backup routes, receipts, filters or forwarding switches.
+
 The existing forwarder still runs `tegridy_forwarder.py`. The catalogue has an
 independent SQLite file `/data/tgforwarder/coas.sqlite3`; it does not change
 forwarding routes, filters, receipts or automatic forwarding settings.

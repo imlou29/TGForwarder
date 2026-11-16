@@ -6,6 +6,7 @@ import sqlite3
 import time
 import unicodedata
 from pathlib import Path
+from tegridy_coa_scope import mode as source_mode, paused as source_paused, has_lab_link
 
 
 def normalized(text):
@@ -92,6 +93,8 @@ def search(db, query, gb, limit=5):
     reports = {}
     for item in db.execute("SELECT * FROM report_links WHERE enabled=1 ORDER BY id"):
         reports.setdefault((item["chat"], item["message"]), []).append(item)
+    modes = {(s["chat"], s["topic"]): source_mode(db, s["chat"], s["topic"]) for s in db.execute("SELECT chat,topic FROM sources WHERE enabled=1")}
+    rows = [r for r in rows if modes[(r["chat"], r["topic"])] != "recent_links" or has_lab_link(r["links"]) or (r["chat"], r["id"]) in imports or (r["chat"], r["id"]) in reports]
     albums = {}
     for r in rows:
         key = (r["chat"], r["topic"], r["album"]) if r["album"] else (r["chat"], r["topic"], "message:" + str(r["id"]))
@@ -142,7 +145,9 @@ def search(db, query, gb, limit=5):
                         "supplied_copies": [{"import_id": i["id"], "sha256": i["sha256"], "extraction_status": i["status"],
                                              "provenance": "admin_supplied_original_linked_to_source_post"} for i in supplied],
                         "media_status": sorted({r["media_status"] for r in group})})
-    sources = [dict(r) for r in db.execute("SELECT topic,title,last_sync,completed_at,error FROM sources WHERE enabled=1")]
+    sources = [{**{k:r[k] for k in ("topic","title","last_sync","completed_at","error")},
+                "paused": source_paused(db,r["chat"],r["topic"]), "mode": source_mode(db,r["chat"],r["topic"])}
+               for r in db.execute("SELECT * FROM sources WHERE enabled=1")]
     coverage = dict(db.execute("""SELECT count(*) AS indexed_messages,
        coalesce(sum(m.media_status IN ('ocr_unavailable','ocr_failed','ocr_empty','download_unavailable','protected_media_not_downloaded','image_too_large','unsupported_document','pdf_tools_unavailable','pdf_restricted','pdf_failed','pdf_empty','pdf_too_large','pdf_partial')
          AND NOT EXISTS (SELECT 1 FROM media_imports i WHERE i.chat=m.chat AND i.message=m.id AND i.enabled=1 AND i.status IN ('pdf_text','pdf_ocr_text','ocr_text'))),0) AS unreadable_media
