@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tegridy_coa_store import connect, label, normalized, search
 from tegridy_coa_service import handler
+from tegridy_coa_scope import set_paused, set_mode
 
 CHAT = -1004350769620
 
@@ -89,6 +90,24 @@ class CatalogueTests(unittest.TestCase):
     def test_search_is_parameterized(self):
         search(self.db, "RT10' OR 1=1 --", "Lobster")
         self.assertEqual(self.db.execute("SELECT count(*) FROM sources").fetchone()[0], 1)
+
+    def test_pausing_does_not_hide_existing_search_results(self):
+        self.post(100, "Lobster RT10")
+        set_paused(self.db, CHAT, 85, True)
+        result = search(self.db, "RT10", "Lobster")
+        self.assertEqual(result["status"], "candidates")
+        self.assertTrue(result["sources"][0]["paused"])
+
+    def test_recent_links_mode_excludes_old_chatter_without_deleting_it(self):
+        self.post(100, "Lobster RT10 ordinary discussion")
+        self.post(101, "Lobster RT10 https://chromate.org/verify?c=123")
+        self.db.execute("UPDATE messages SET links=? WHERE id=101", ('["https://chromate.org/verify?c=123"]',))
+        self.db.commit()
+        set_mode(self.db, CHAT, 85, "recent_links")
+        result = search(self.db, "RT10", "Lobster")
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["message_id"], 101)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone()[0], 2)
 
     def test_http_requires_token_and_gb(self):
         old = os.environ.get("COA_DB_PATH")

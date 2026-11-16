@@ -9,6 +9,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from tegridy_coa_store import connect
+from tegridy_coa_scope import set_paused, set_mode, seed, paused, mode
 
 # Load the indexer with only its external Telegram adapters stubbed. This lets
 # the durable sync algorithm run on Windows too (production uses Linux fcntl).
@@ -139,6 +140,47 @@ class SyncTests(unittest.TestCase):
         client = Client([message(85)])
         await sync.sync_source(self.db, client, self.source(), 100)
         self.assertIsNotNone(self.db.execute("SELECT 1 FROM messages WHERE id=85").fetchone())
+
+    async def test_pause_prevents_any_telegram_access_and_keeps_records(self):
+        self.db.execute("INSERT INTO messages VALUES (?,100,85,'',100,'fp','keep','','link_or_text','[]',1,0)", (CHAT,))
+        self.db.commit()
+        set_paused(self.db, CHAT, 85, True)
+        with self.assertRaises(sync.SourcePaused):
+            await sync.sync_source(self.db, None, self.source(), 100)
+        self.assertEqual(self.db.execute("SELECT caption FROM messages").fetchone()[0], "keep")
+
+    async def test_pause_takes_effect_between_messages(self):
+        owner = self
+        class PauseClient(Client):
+            async def iter_messages(self, *args, **kwargs):
+                yield message(100, text="first")
+                set_paused(owner.db, CHAT, 85, True)
+                yield message(101, text="second")
+        with self.assertRaises(sync.SourcePaused):
+            await sync.sync_source(self.db, PauseClient([]), self.source(), 100)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM messages").fetchone()[0], 1)
+
+    async def test_recent_links_reads_only_latest_200_and_never_downloads_media(self):
+        set_mode(self.db, CHAT, 85, "recent_links")
+        messages = [message(i, text="ordinary update") for i in range(100, 401)]
+        messages[0].message = "https://chromate.org/verify?c=OLD"
+        messages[-1].message = "YuanTai report https://chromate.org/verify?c=NEW"
+        messages[-1].photo = SimpleNamespace(id=99)
+        with patch.object(sync, "extract_media", side_effect=AssertionError("Must not download media")):
+            await sync.sync_source(self.db, Client(messages), self.source(), 100)
+        self.assertEqual([r[0] for r in self.db.execute("SELECT id FROM messages")], [400])
+        self.assertEqual(self.source()["cutoff"], 0)
+        self.assertGreater(self.source()["completed_at"], 0)
+
+    async def test_deployment_defaults_do_not_override_later_admin_choices(self):
+        seed(self.db, CHAT, "85", "85")
+        self.assertTrue(paused(self.db, CHAT, 85))
+        self.assertEqual(mode(self.db, CHAT, 85), "recent_links")
+        set_paused(self.db, CHAT, 85, False)
+        set_mode(self.db, CHAT, 85, "full")
+        seed(self.db, CHAT, "85", "85")
+        self.assertFalse(paused(self.db, CHAT, 85))
+        self.assertEqual(mode(self.db, CHAT, 85), "full")
 
 
 if __name__ == "__main__":
