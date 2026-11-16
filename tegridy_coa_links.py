@@ -18,8 +18,8 @@ HELP = ("Register several lab links in one private message:\n"
 def lab_url(value):
     value = value.strip()
     url = urlsplit(value)
-    if url.scheme != "https" or url.netloc.lower() not in ("chromate.org", "www.chromate.org", "verify.janoshik.com") or url.fragment:
-        raise ValueError("Use an exact HTTPS Chromate or Janoshik report URL")
+    if url.scheme != "https" or url.netloc.lower() not in ("chromate.org", "www.chromate.org", "verify.janoshik.com", "janoshik.com", "www.janoshik.com", "verifiedbyvanguard.com") or url.fragment:
+        raise ValueError("Use an exact HTTPS Chromate, Janoshik or Vanguard report URL")
     if len(value) > 500 or any(c.isspace() for c in value):
         raise ValueError("Invalid report URL")
     return value
@@ -37,7 +37,7 @@ def reference_matches(url, reference):
     if lab == "chromate" and parsed.netloc.lower() in ("chromate.org", "www.chromate.org"):
         code = parse_qs(parsed.query).get("c", [""])[0]
         return code.split("_", 1)[0] == number
-    if lab == "janoshik" and parsed.netloc.lower() == "verify.janoshik.com":
+    if lab == "janoshik" and parsed.netloc.lower() in ("verify.janoshik.com", "janoshik.com", "www.janoshik.com"):
         match = re.match(r"/tests/(\d+)-", parsed.path)
         return bool(match and match[1] == number)
     return False
