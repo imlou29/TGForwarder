@@ -14,6 +14,11 @@ def normalized(text):
     return re.sub(r"\b([a-z]{1,8})\s+(\d+)\b", r"\1\2", text)
 
 
+def search_tokens(text):
+    plain = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return set(re.findall(r"[a-z0-9]+", plain)) | set(normalized(text).split())
+
+
 def connect(path=None):
     path = Path(path or os.getenv("COA_DB_PATH", "/data/tgforwarder/coas.sqlite3"))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +103,7 @@ def search(db, query, gb, limit=5):
         supplied = [i for r in group for i in imports.get((r["chat"], r["id"]), [])]
         registered = [(r, report) for r in group for report in reports.get((r["chat"], r["id"]), [])]
         for source, report in registered:
-            if not gb_matches(report["gb"], gb) or not all(term in set(normalized(report["product"] + " " + report["kind"]).split()) for term in terms):
+            if not gb_matches(report["gb"], gb) or not all(term in search_tokens(report["product"] + " " + report["kind"]) for term in terms):
                 continue
             total_matches += 1
             if len(results) < max(1, min(int(limit), 10)):
@@ -114,7 +119,7 @@ def search(db, query, gb, limit=5):
             continue
         evidence = "\n".join(r["caption"] + "\n" + r["ocr"] + "\n" + (r["label_product"] or "") for r in group)
         evidence += "\n" + "\n".join("Admin-supplied original, " + i["status"] + ":\n" + i["text"] for i in supplied)
-        tokens = set(normalized(evidence).split())
+        tokens = search_tokens(evidence)
         if not all(term in tokens for term in terms):
             continue
         labels = {normalized(r["label_gb"]) for r in group if r["label_gb"]}

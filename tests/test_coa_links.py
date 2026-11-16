@@ -32,6 +32,8 @@ class LinkTests(unittest.TestCase):
         answer = search(self.db, "RT30", "YuanTai")
         self.assertEqual(answer["matches_total"], 1)
         self.assertEqual(answer["results"][0]["links"], [URL])
+        self.assertEqual(search(self.db, "Retatrutide", "YuanTai")["results"][0]["links"], [URL])
+        self.assertEqual(search(self.db, "RT300", "YuanTai")["results"], [])
         self.assertIn("NOT been fetched or verified", answer["results"][0]["evidence"])
         self.assertEqual(search(self.db, "RT30", "Lobster")["results"], [])
 
