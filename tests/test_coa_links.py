@@ -74,5 +74,41 @@ class LinkTests(unittest.TestCase):
             register_batch(self.db, "YuanTai | RT30 | https://evil.example/report | COA", 123)
 
 
+    def test_plain_janoshik_host_keeps_exact_stored_url(self):
+        url = "https://janoshik.com/tests/246773-HGH_24iu_TESTTOKEN"
+        self.post(110, [url])
+        register_batch(self.db, "Lobster | HGH 24iu US | janoshik:246773 | COA | 110", 123)
+        result = search(self.db, "HGH 24iu US", "Lobster")
+        self.assertEqual(result["results"][0]["links"], [url])
+        self.assertEqual(result["results"][0]["reports"][0]["url"], url)
+
+    def test_vanguard_exact_url_requires_enabled_source_and_is_not_reconstructed(self):
+        url = "https://verifiedbyvanguard.com/verify/30cff837-29f3-4183-92be-c06ff6a8e8f1"
+        self.post(111, [url])
+        register_batch(self.db, f"Lobster | HCG | {url} | COA - Vanguard | 111", 123)
+        self.assertEqual(search(self.db, "HCG", "Lobster")["results"][0]["links"], [url])
+        with self.assertRaisesRegex(ValueError, "not found"):
+            register_batch(self.db, f"Lobster | HCG | {url[:-1]}0 | COA", 123)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM report_links").fetchone()[0], 1)
+
+    def test_lookalike_domains_credentials_and_non_https_are_rejected(self):
+        for url in [
+            "https://janoshik.com.evil.example/tests/246773-token",
+            "https://verifiedbyvanguard.com.evil.example/verify/token",
+            "https://user:secret@verifiedbyvanguard.com/verify/token",
+            "http://janoshik.com/tests/246773-token",
+            "https://janoshik.com:8443/tests/246773-token",
+            "https://verifiedbyvanguard.com/verify/token#fragment",
+        ]:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                register_batch(self.db, f"Lobster | HCG | {url} | COA", 123)
+
+    def test_new_hosts_do_not_allow_arbitrary_supplied_or_other_host_urls(self):
+        url = "https://janoshik.com/tests/246773-HGH_24iu_TESTTOKEN"
+        self.post(110, [url])
+        with self.assertRaisesRegex(ValueError, "not found"):
+            register_batch(self.db, "Lobster | HGH 24iu US | https://verify.janoshik.com/tests/246773-HGH_24iu_TESTTOKEN | COA | 110", 123)
+
+
 if __name__ == "__main__":
     unittest.main()
