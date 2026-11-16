@@ -74,6 +74,33 @@ def install(client, authorized):
         command = parts[0] if parts else ""
         value = parts[1] if len(parts) > 1 else ""
         command = command.split("@")[0].lower()
+        if command == "/coa_supplied":
+            from tegridy_coa_supplied import HELP as SUPPLIED_HELP, register_supplied
+            if not value.strip():
+                await event.respond(SUPPLIED_HELP, parse_mode=None)
+                return
+            db = connect()
+            try:
+                results = register_supplied(db, value, event.sender_id)
+                await event.respond("Registered " + str(len(results)) + " admin-supplied lab links. No Telegram source claimed; lab results not read or verified.\n" +
+                                    "\n".join(f"Supplied #{r['id']} · {r['product']} · {r['kind']}" for r in results), parse_mode=None)
+            except ValueError as exc:
+                await event.respond(str(exc), parse_mode=None)
+            finally:
+                db.close()
+            return
+        if command == "/coa_supplied_remove":
+            db = connect()
+            try:
+                if not value.strip().isdigit():
+                    await event.respond("Use /coa_supplied_remove supplied_registration_id")
+                    return
+                with db:
+                    changed = db.execute("UPDATE admin_report_links SET enabled=0 WHERE id=?", (int(value),)).rowcount
+                await event.respond("Supplied link removed." if changed else "Supplied registration not found.")
+            finally:
+                db.close()
+            return
         if command == "/coa_links":
             from tegridy_coa_links import HELP as LINK_HELP, register_batch
             if not value.strip():
