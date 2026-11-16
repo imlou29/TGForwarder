@@ -77,6 +77,24 @@ soft-disables an erroneous import; labels can be corrected with `/coa_label`.
 Only PDFs/images up to 15 MiB are accepted. Each file needs its own caption;
 ZIP/bulk manifests are not supported. Start by checking one file end-to-end.
 
+## Registering lab links without importing PDFs
+
+Authorized admins can send one private `/coa_links` message, followed by up to
+25 lines in the format `GB | product | exact lab URL | test type / note`.
+Only exact HTTPS Chromate and Janoshik URLs already present in a currently
+enabled Telegram source post are accepted. If a URL is ambiguous across posts,
+append `| original_message_id` to select the source explicitly. Validation is
+atomic: an invalid or missing link prevents all writes in that batch.
+The reference field can also be `chromate:report_id` or `janoshik:report_id`;
+this selects the unique matching URL from the stored Telegram source. It never
+reconstructs or guesses verification tokens from a screenshot.
+
+Each link is registered separately, so two different tests in the same Telegram
+post keep distinct classifications and exact lab URLs. These are admin-supplied
+link labels, not verified laboratory findings: no report webpage is fetched and
+no purity/quantity value is invented. The original group-post link remains in
+each result. `/coa_unlink registration_id` soft-disables a wrong registration.
+
 ## Private search connection
 
 Set a random `COA_API_TOKEN` of at least 32 characters on TGForwarder and OpenClaw.
@@ -116,3 +134,4 @@ to restore pre-COA code. The independent `coas.sqlite3` is harmless to the old
 code. Do not overwrite or delete the forwarding database or Telegram sessions.
 Restore the downloaded baseline archive only if an actual data restore is
 needed, with the service stopped and credentials kept private.
+

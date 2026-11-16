@@ -90,6 +90,8 @@ def panel():
                  "Reads selected source topics; does not forward posts."]
         supplied = db.execute("SELECT count(*) FROM media_imports WHERE enabled=1").fetchone()[0]
         lines.append(f"Privately supplied originals: {supplied} · /coa_import for instructions")
+        registered = db.execute("SELECT count(*) FROM report_links WHERE enabled=1").fetchone()[0]
+        lines.append(f"Registered lab links: {registered} · /coa_links for batch registration")
         for s in sources:
             state = "history loading" if s["cutoff"] or not s["completed_at"] else "history loaded"
             last = time.strftime("%d %b %H:%M UTC", time.gmtime(s["last_sync"])) if s["last_sync"] else "not yet"
@@ -210,3 +212,4 @@ def start(client, jobs, authorized):
         log.info("COA API disabled until a private token of at least 32 characters is configured")
     task = asyncio.create_task(sync_loop(jobs))
     return task, server
+
