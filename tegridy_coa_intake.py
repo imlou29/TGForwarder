@@ -70,8 +70,37 @@ def install(client, authorized):
         if not event.is_private or event.sender_id not in authorized:
             return
         raw = event.raw_text or ""
-        command, _, value = raw.partition(" ")
+        parts = raw.split(maxsplit=1)
+        command = parts[0] if parts else ""
+        value = parts[1] if len(parts) > 1 else ""
         command = command.split("@")[0].lower()
+        if command == "/coa_links":
+            from tegridy_coa_links import HELP as LINK_HELP, register_batch
+            if not value.strip():
+                await event.respond(LINK_HELP, parse_mode=None)
+                return
+            db = connect()
+            try:
+                results = register_batch(db, value, event.sender_id)
+                await event.respond("Registered " + str(len(results)) + " report links. Lab results have not been read or verified.\n" +
+                                    "\n".join(f"#{r['id']} · {r['product']} · {r['kind']}" for r in results), parse_mode=None)
+            except ValueError as exc:
+                await event.respond(str(exc), parse_mode=None)
+            finally:
+                db.close()
+            return
+        if command == "/coa_unlink":
+            db = connect()
+            try:
+                if not value.strip().isdigit():
+                    await event.respond("Use /coa_unlink registration_id")
+                    return
+                with db:
+                    changed = db.execute("UPDATE report_links SET enabled=0 WHERE id=?", (int(value),)).rowcount
+                await event.respond("Link registration removed." if changed else "Registration not found.")
+            finally:
+                db.close()
+            return
         if command == "/coa_import":
             await event.respond(HELP, parse_mode=None)
             return
@@ -148,3 +177,4 @@ def install(client, authorized):
             await event.respond("The original could not be indexed. Please retry later or check the file.")
         finally:
             pending -= 1
+

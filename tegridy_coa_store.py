@@ -48,6 +48,12 @@ def connect(path=None):
         text TEXT NOT NULL, status TEXT NOT NULL, uploaded_by INTEGER NOT NULL,
         upload_message INTEGER NOT NULL, received_at INTEGER NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(chat,message,sha256));
+      CREATE TABLE IF NOT EXISTS report_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL,
+        message INTEGER NOT NULL, url TEXT NOT NULL, gb TEXT NOT NULL,
+        product TEXT NOT NULL, kind TEXT NOT NULL, admin INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(chat,message,url));
     """)
     return db
 
@@ -78,6 +84,9 @@ def search(db, query, gb, limit=5):
     imports = {}
     for item in db.execute("SELECT * FROM media_imports WHERE enabled=1 ORDER BY id"):
         imports.setdefault((item["chat"], item["message"]), []).append(item)
+    reports = {}
+    for item in db.execute("SELECT * FROM report_links WHERE enabled=1 ORDER BY id"):
+        reports.setdefault((item["chat"], item["message"]), []).append(item)
     albums = {}
     for r in rows:
         key = (r["chat"], r["topic"], r["album"]) if r["album"] else (r["chat"], r["topic"], "message:" + str(r["id"]))
@@ -87,6 +96,22 @@ def search(db, query, gb, limit=5):
     unresolved = 0
     for group in albums.values():
         supplied = [i for r in group for i in imports.get((r["chat"], r["id"]), [])]
+        registered = [(r, report) for r in group for report in reports.get((r["chat"], r["id"]), [])]
+        for source, report in registered:
+            if not gb_matches(report["gb"], gb) or not all(term in set(normalized(report["product"] + " " + report["kind"]).split()) for term in terms):
+                continue
+            total_matches += 1
+            if len(results) < max(1, min(int(limit), 10)):
+                results.append({"message_id": source["id"], "topic": source["topic"], "posted_at": source["date"],
+                                "telegram_url": telegram_link(source["chat"], source["topic"], source["id"]),
+                                "gb_basis": "admin_link_registration", "links": [report["url"]],
+                                "reports": [{"registration_id": report["id"], "url": report["url"], "product": report["product"], "kind": report["kind"]}],
+                                "evidence": ("Admin-registered link and classification. Report contents have NOT been fetched or verified.\n" + report["product"] + "\n" + report["kind"] + "\nOriginal Telegram caption:\n" + source["caption"])[:10000],
+                                "media_status": ["registered_link_report_not_read"], "supplied_copies": []})
+        registered_urls = {i["url"] for _, i in registered}
+        remaining_links = {link for r in group for link in json.loads(r["links"])} - registered_urls
+        if registered and not remaining_links and not supplied and not any(r["ocr"] for r in group):
+            continue
         evidence = "\n".join(r["caption"] + "\n" + r["ocr"] + "\n" + (r["label_product"] or "") for r in group)
         evidence += "\n" + "\n".join("Admin-supplied original, " + i["status"] + ":\n" + i["text"] for i in supplied)
         tokens = set(normalized(evidence).split())
@@ -108,7 +133,7 @@ def search(db, query, gb, limit=5):
                         "telegram_url": telegram_link(first["chat"], first["topic"], first["id"]),
                         "gb_basis": "admin_label" if labels else "explicit_source_text",
                         "evidence": evidence[:10000],
-                        "links": sorted({link for r in group for link in json.loads(r["links"])}),
+                        "links": sorted(remaining_links),
                         "supplied_copies": [{"import_id": i["id"], "sha256": i["sha256"], "extraction_status": i["status"],
                                              "provenance": "admin_supplied_original_linked_to_source_post"} for i in supplied],
                         "media_status": sorted({r["media_status"] for r in group})})
@@ -159,3 +184,4 @@ def label(db, chat, message, gb, product, admin):
     with db:
         db.execute("INSERT INTO labels VALUES (?,?,?,?,?,?) ON CONFLICT(chat,message) DO UPDATE SET gb=excluded.gb,product=excluded.product,admin=excluded.admin,updated_at=excluded.updated_at",
                    (chat, message, gb.strip(), product.strip(), admin, int(time.time())))
+

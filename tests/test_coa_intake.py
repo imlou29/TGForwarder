@@ -140,6 +140,24 @@ class IntakePermissionsTests(unittest.TestCase):
             self.assertEqual(event.responses, [])
         self.assertEqual(self.downloads, 0)
 
+    def test_batch_link_commands_require_private_admin_access(self):
+        for event in (self.event(user=999, caption="/coa_links"), self.event(private=False, caption="/coa_links")):
+            self.run_event(event)
+            self.assertEqual(event.responses, [])
+        self.assertEqual(self.downloads, 0)
+
+    def test_batch_link_command_handles_newline_and_does_not_download_media(self):
+        import json
+        url = "https://chromate.org/verify?c=123_TESTONLY"
+        db = connect()
+        db.execute("UPDATE messages SET links=? WHERE id=100", (json.dumps([url]),))
+        db.commit()
+        db.close()
+        event = self.event(caption=f"/coa_links\nYuanTai | RT30 | {url} | COA")
+        self.run_event(event)
+        self.assertEqual(self.downloads, 0)
+        self.assertIn("Registered 1 report links", event.responses[0])
+
     def test_invalid_caption_and_protected_media_do_not_download(self):
         for event in (self.event(caption="RT10"), self.event(protected=True)):
             self.run_event(event)
@@ -160,3 +178,4 @@ class IntakePermissionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
