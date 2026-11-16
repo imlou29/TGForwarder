@@ -55,6 +55,11 @@ def connect(path=None):
         text TEXT NOT NULL, status TEXT NOT NULL, uploaded_by INTEGER NOT NULL,
         upload_message INTEGER NOT NULL, received_at INTEGER NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(chat,message,sha256));
+      CREATE TABLE IF NOT EXISTS admin_report_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL,
+        gb TEXT NOT NULL, product TEXT NOT NULL, kind TEXT NOT NULL,
+        admin INTEGER NOT NULL, received_at INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(gb,url));
       CREATE TABLE IF NOT EXISTS report_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL,
         message INTEGER NOT NULL, url TEXT NOT NULL, gb TEXT NOT NULL,
@@ -119,6 +124,26 @@ def search(db, query, gb, limit=5):
         albums.setdefault(key, []).append(r)
     results = []
     total_matches = 0
+    for report in db.execute("SELECT * FROM admin_report_links WHERE enabled=1 ORDER BY id"):
+        report_id = lobster_hgh_report_id(report["url"]) if curated_hgh else None
+        if curated_hgh and (not report_id or report_id in seen_hgh_reports):
+            continue
+        if not gb_matches(report["gb"], gb) or not all(term in search_tokens(report["product"] + " " + report["kind"]) for term in terms):
+            continue
+        if curated_hgh:
+            seen_hgh_reports.add(report_id)
+        total_matches += 1
+        if len(results) < max(1, min(int(limit), 10)):
+            results.append({
+                "message_id": None, "topic": None, "posted_at": None, "telegram_url": None,
+                "gb_basis": "admin_supplied_lab_link", "links": [report["url"]],
+                "reports": [{"supplied_registration_id": report["id"], "url": report["url"],
+                             "product": report["product"], "kind": report["kind"]}],
+                "provenance": {"type": "admin_supplied_lab_link", "received_at": report["received_at"],
+                               "has_telegram_source": False},
+                "evidence": ("Admin-supplied lab link and classification; no original Telegram source was supplied. "
+                             "Report contents have NOT been fetched or verified.\n" + report["product"] + "\n" + report["kind"])[:10000],
+                "media_status": ["registered_link_report_not_read"], "supplied_copies": []})
     unresolved = 0
     for group in albums.values():
         supplied = [i for r in group for i in imports.get((r["chat"], r["id"]), [])]
