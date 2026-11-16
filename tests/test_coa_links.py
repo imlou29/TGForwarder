@@ -110,5 +110,63 @@ class LinkTests(unittest.TestCase):
             register_batch(self.db, "Lobster | HGH 24iu US | https://verify.janoshik.com/tests/246773-HGH_24iu_TESTTOKEN | COA | 110", 123)
 
 
+    def hgh_post(self, mid, urls):
+        self.post(mid, urls)
+        self.db.execute("UPDATE messages SET caption=? WHERE id=?", ("Lobster HGH 11iu 24iu US EU UK " + " ".join(urls), mid))
+        self.db.commit()
+
+    def test_lobster_hgh_returns_four_confirmed_main_reports_not_custom_or_repeated_posts(self):
+        reports = [
+            (245776, "HGH 11iu EU UK", "11iu"),
+            (245809, "HGH 24iu EU UK", "24iu"),
+            (246773, "HGH 24iu US", "24iu"),
+            (246794, "HGH 11iu US", "11iu"),
+        ]
+        for offset, (number, product, strength) in enumerate(reports):
+            mid = 200 + offset
+            url = f"https://verify.janoshik.com/tests/{number}-HGH_{strength}_TOKEN"
+            self.hgh_post(mid, [url])
+            register_batch(self.db, f"Lobster | {product} | {url} | COA | {mid}", 123)
+            self.hgh_post(300 + offset, [url])
+        custom = "https://janoshik.com/tests/246774-HGH_24iu_BUSINESS"
+        self.hgh_post(400, [custom])
+        register_batch(self.db, f"Lobster | HGH 24iu US | {custom} | Custom COA | 400", 123)
+        result = search(self.db, "HGH", "Lobster")
+        self.assertEqual(result["matches_total"], 4)
+        self.assertEqual(len(result["results"]), 4)
+        self.assertFalse(result["truncated"])
+        self.assertTrue(result["curated_scope"]["registered_main_reports_only"])
+        self.assertEqual({r["gb_basis"] for r in result["results"]}, {"admin_link_registration"})
+
+    def test_hgh_region_strength_and_superh_alias_are_respected(self):
+        us = "https://janoshik.com/tests/246773-HGH_24iu_TOKEN"
+        eu = "https://verify.janoshik.com/tests/245809-HGH_24iu_TOKEN"
+        self.hgh_post(210, [us])
+        self.hgh_post(211, [eu])
+        register_batch(self.db, f"Lobster | HGH 24iu US | {us} | COA | 210\nLobster | HGH 24iu EU UK | {eu} | COA | 211", 123)
+        for query in ("HGH 24iu US", "SuperH 24iu US", "H.G.H. 24iu US"):
+            result = search(self.db, query, "Lobster")
+            self.assertEqual(result["matches_total"], 1)
+            self.assertEqual(result["results"][0]["links"], [us])
+        self.assertEqual(search(self.db, "HGH 24iu EU UK", "Lobster")["results"][0]["links"], [eu])
+
+    def test_hgh_curation_does_not_hide_other_gbs_or_other_products(self):
+        url = "https://janoshik.com/tests/999999-HGH_24iu_OTHERGB"
+        self.hgh_post(220, [url])
+        register_batch(self.db, f"YuanTai | HGH 24iu | {url} | COA | 220", 123)
+        self.assertEqual(search(self.db, "HGH", "YuanTai")["results"][0]["links"], [url])
+        register_batch(self.db, f"Lobster | RT30 | {URL} | COA | 100", 123)
+        self.assertEqual(search(self.db, "RT30", "Lobster")["results"][0]["links"], [URL])
+
+    def test_repeated_registrations_of_same_hgh_report_are_deduplicated(self):
+        urls = ["https://verify.janoshik.com/tests/246794-HGH_11iu_TOKEN", "https://janoshik.com/tests/246794-HGH_11iu_TOKEN"]
+        for mid, url in zip((230, 231), urls):
+            self.hgh_post(mid, [url])
+            register_batch(self.db, f"Lobster | HGH 11iu US | {url} | COA | {mid}", 123)
+        result = search(self.db, "HGH", "Lobster")
+        self.assertEqual(result["matches_total"], 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()

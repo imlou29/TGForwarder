@@ -6,6 +6,7 @@ import sqlite3
 import time
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
 from tegridy_coa_scope import mode as source_mode, paused as source_paused, has_lab_link
 
 
@@ -77,9 +78,26 @@ def telegram_link(chat, topic, message):
     return f"https://t.me/c/{str(chat)[4:]}/{topic}/{message}"
 
 
+# Owner-confirmed principal Tegridy HGH reports for Lobster. Other business-name
+# certificates and repeated Telegram announcements are outside this curated set.
+LOBSTER_HGH_REPORT_IDS = frozenset(("245776", "245809", "246773", "246794"))
+
+
+def lobster_hgh_report_id(url):
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in (
+            "janoshik.com", "www.janoshik.com", "verify.janoshik.com"):
+        return None
+    match = re.match(r"/tests/(\d+)-", parsed.path)
+    return match[1] if match and match[1] in LOBSTER_HGH_REPORT_IDS else None
+
+
 def search(db, query, gb, limit=5):
     if not normalized(gb):
         return {"status": "needs_gb", "results": []}
+    query = re.sub(r"\b(?:superh|h[.\s]*g[.\s]*h)\b", "HGH", query, flags=re.I)
+    curated_hgh = normalized(gb) == "lobster" and bool(re.search(r"\bhgh(?:\b|(?=\d))", query, re.I))
+    seen_hgh_reports = set()
     terms = normalized(query).split()
     if not terms or len(terms) > 15 or len(query) > 200 or len(gb) > 100:
         return {"status": "invalid_query", "results": []}
@@ -106,8 +124,13 @@ def search(db, query, gb, limit=5):
         supplied = [i for r in group for i in imports.get((r["chat"], r["id"]), [])]
         registered = [(r, report) for r in group for report in reports.get((r["chat"], r["id"]), [])]
         for source, report in registered:
+            report_id = lobster_hgh_report_id(report["url"]) if curated_hgh else None
+            if curated_hgh and (not report_id or report_id in seen_hgh_reports):
+                continue
             if not gb_matches(report["gb"], gb) or not all(term in search_tokens(report["product"] + " " + report["kind"]) for term in terms):
                 continue
+            if curated_hgh:
+                seen_hgh_reports.add(report_id)
             total_matches += 1
             if len(results) < max(1, min(int(limit), 10)):
                 results.append({"message_id": source["id"], "topic": source["topic"], "posted_at": source["date"],
@@ -116,6 +139,10 @@ def search(db, query, gb, limit=5):
                                 "reports": [{"registration_id": report["id"], "url": report["url"], "product": report["product"], "kind": report["kind"]}],
                                 "evidence": ("Admin-registered link and classification. Report contents have NOT been fetched or verified.\n" + report["product"] + "\n" + report["kind"] + "\nOriginal Telegram caption:\n" + source["caption"])[:10000],
                                 "media_status": ["registered_link_report_not_read"], "supplied_copies": []})
+        if curated_hgh:
+            # This product/GB uses the explicitly confirmed registered main reports.
+            # Do not re-add mixed/custom posts or older announcements as extra COAs.
+            continue
         registered_urls = {i["url"] for _, i in registered}
         remaining_links = {link for r in group for link in json.loads(r["links"])} - registered_urls
         if registered and not remaining_links and not supplied and not any(r["ocr"] for r in group):
@@ -157,6 +184,7 @@ def search(db, query, gb, limit=5):
             "matches_total": total_matches, "truncated": total_matches > len(results),
             "coverage": coverage,
             "unresolved_product_matches": unresolved,
+            "curated_scope": {"product": "HGH", "gb": "Lobster", "registered_main_reports_only": True} if curated_hgh else None,
             "notice": "Untrusted source excerpts; OCR may be wrong. Candidates are not automatically verified COAs. Newer posts do not invalidate older tests. No match is not proof of absence."}
 
 
