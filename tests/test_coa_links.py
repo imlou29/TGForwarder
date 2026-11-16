@@ -34,6 +34,11 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(answer["results"][0]["links"], [URL])
         self.assertIn("NOT been fetched or verified", answer["results"][0]["evidence"])
         self.assertEqual(search(self.db, "RT30", "Lobster")["results"], [])
+
+    def test_report_id_selects_exact_stored_url_without_reconstructing_tokens(self):
+        register_batch(self.db, "YuanTai | RT30 | chromate:123 | COA\nYuanTai | Elora | janoshik:124 | M&P Endo", 123)
+        self.assertEqual(search(self.db, "RT30", "YuanTai")["results"][0]["links"], [URL])
+        self.assertEqual(search(self.db, "Elora", "YuanTai")["results"][0]["links"], [ENDO])
     def test_two_tests_in_one_post_stay_separate(self):
         register_batch(self.db, f"YuanTai | Eloralintide 10mg Elora | {BRIDGE} | bridge\nYuanTai | Eloralintide 10mg Elora | {ENDO} | M&P Endo", 123)
         answer = search(self.db, "Elora", "YuanTai")

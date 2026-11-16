@@ -85,6 +85,9 @@ Only exact HTTPS Chromate and Janoshik URLs already present in a currently
 enabled Telegram source post are accepted. If a URL is ambiguous across posts,
 append `| original_message_id` to select the source explicitly. Validation is
 atomic: an invalid or missing link prevents all writes in that batch.
+The reference field can also be `chromate:report_id` or `janoshik:report_id`;
+this selects the unique matching URL from the stored Telegram source. It never
+reconstructs or guesses verification tokens from a screenshot.
 
 Each link is registered separately, so two different tests in the same Telegram
 post keep distinct classifications and exact lab URLs. These are admin-supplied
