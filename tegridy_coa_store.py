@@ -8,6 +8,7 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 from tegridy_coa_scope import mode as source_mode, paused as source_paused, has_lab_link
+from tegridy_coa_exclusions import excluded_url, scrub_text, filtered_post
 
 
 def normalized(text):
@@ -110,12 +111,16 @@ def search(db, query, gb, limit=5):
        FROM messages m JOIN sources s ON s.chat=m.chat AND s.topic=m.topic
        LEFT JOIN labels l ON l.chat=m.chat AND l.message=m.id
        WHERE s.enabled=1 AND m.deleted=0 ORDER BY m.date DESC,m.id DESC""").fetchall()
+    rows = [filtered_post(row) for row in rows]
     imports = {}
     for item in db.execute("SELECT * FROM media_imports WHERE enabled=1 ORDER BY id"):
+        item = dict(item)
+        item["text"] = scrub_text(item["text"])
         imports.setdefault((item["chat"], item["message"]), []).append(item)
     reports = {}
     for item in db.execute("SELECT * FROM report_links WHERE enabled=1 ORDER BY id"):
-        reports.setdefault((item["chat"], item["message"]), []).append(item)
+        if not excluded_url(item["url"]):
+            reports.setdefault((item["chat"], item["message"]), []).append(item)
     modes = {(s["chat"], s["topic"]): source_mode(db, s["chat"], s["topic"]) for s in db.execute("SELECT chat,topic FROM sources WHERE enabled=1")}
     rows = [r for r in rows if modes[(r["chat"], r["topic"])] != "recent_links" or has_lab_link(r["links"]) or (r["chat"], r["id"]) in imports or (r["chat"], r["id"]) in reports]
     albums = {}
@@ -125,6 +130,8 @@ def search(db, query, gb, limit=5):
     results = []
     total_matches = 0
     for report in db.execute("SELECT * FROM admin_report_links WHERE enabled=1 ORDER BY id"):
+        if excluded_url(report["url"]):
+            continue
         report_id = lobster_hgh_report_id(report["url"]) if curated_hgh else None
         if curated_hgh and (not report_id or report_id in seen_hgh_reports):
             continue
