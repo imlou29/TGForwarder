@@ -1,0 +1,30 @@
+name: Tegridy backup offline checks
+on:
+  push:
+    branches: [tegridy-topic-backup]
+  pull_request:
+    branches: [tegridy-topic-backup]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Install local PDF/OCR integration test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa poppler-utils fonts-dejavu-core
+          python -m pip install pillow reportlab
+      - name: Compile source files
+        run: python -m compileall -q .
+      - name: Run offline smoke tests (never connects to Telegram)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Verify reversible OpenClaw installer and lookup helper
+        run: node --test tests/test_coa_installer.mjs
+
