@@ -182,6 +182,18 @@ def install(client, authorized):
                     else:
                         text = await asyncio.to_thread(ocr_file, downloaded)
                         status = "ocr_text" if text.strip() else "ocr_empty"
+                    if not text.strip() or status not in ("pdf_text", "pdf_ocr_text", "pdf_partial", "ocr_text"):
+                        reasons = {
+                            "pdf_restricted": "PDF requires a password or does not permit text extraction.",
+                            "pdf_tools_unavailable": "PDF reading tools are unavailable on the server.",
+                            "pdf_failed": "The PDF could not be opened by the reader.",
+                            "pdf_empty": "No text could be extracted from the PDF, including OCR.",
+                            "ocr_empty": "No text could be read from the image."
+                        }
+                        log.warning("COA private import rejected source_message=%s extraction=%s", metadata[3], status)
+                        await event.respond(reasons.get(status, "The document could not be read.") +
+                                            " File was not indexed. Status: " + status, parse_mode=None)
+                        return
                     digest = hashlib.sha256(Path(downloaded).read_bytes()).hexdigest()
                     filename = Path(downloaded).name
                     db = connect()

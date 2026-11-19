@@ -60,7 +60,7 @@ class PDFTests(unittest.TestCase):
         self.assertIn("page 6", text)
         self.assertNotIn("page 7", text)
 
-    def test_encrypted_pdf_is_not_processed(self):
+    def test_copy_restricted_pdf_is_not_processed(self):
         from reportlab.pdfgen.canvas import Canvas
         from reportlab.lib.pdfencrypt import StandardEncryption
         canvas = Canvas(str(self.path), encrypt=StandardEncryption("", ownerPassword="fixture-only", canCopy=0))
@@ -68,6 +68,28 @@ class PDFTests(unittest.TestCase):
         canvas.save()
         text, status = sync.extract_pdf(self.path)
         self.assertEqual((text, status), ("", "pdf_restricted"))
+
+    def test_encrypted_pdf_with_permitted_copy_and_no_open_password_is_read(self):
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.lib.pdfencrypt import StandardEncryption
+        canvas = Canvas(str(self.path), encrypt=StandardEncryption("", ownerPassword="fixture-only", canCopy=1))
+        for n in range(2):
+            canvas.drawString(40, 780, "Tegridy NAD 1000mg second opinion, laboratory fixture only. " * 2)
+            canvas.drawString(40, 750, "Purity 99.8 percent; quantity 1097.5 mg; sample TEST-ONLY")
+            canvas.showPage()
+        canvas.save()
+        text, status = sync.extract_pdf(self.path)
+        self.assertEqual(status, "pdf_text")
+        self.assertIn("NAD", text)
+        self.assertIn("PDF page 2 text", text)
+
+    def test_open_password_is_not_bypassed(self):
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.lib.pdfencrypt import StandardEncryption
+        canvas = Canvas(str(self.path), encrypt=StandardEncryption("required", ownerPassword="fixture-only", canCopy=1))
+        canvas.drawString(40, 780, "Password protected offline fixture")
+        canvas.save()
+        self.assertEqual(sync.extract_pdf(self.path), ("", "pdf_restricted"))
 
 
 if __name__ == "__main__":

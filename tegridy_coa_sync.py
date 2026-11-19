@@ -68,14 +68,20 @@ def extract_pdf(path):
     try:
         info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=15,
                               check=True, env={**os.environ, "LC_ALL": "C"}).stdout.decode("utf-8", errors="replace")
-        if re.search(r"^Encrypted:\s+yes", info, re.M | re.I):
+        # Owner-password protection may coexist with permitted, password-free
+        # reading/copying. Do not reject those PDFs merely for encryption.
+        encrypted = re.search(r"^Encrypted:\s+yes[^\n]*", info, re.M | re.I)
+        if encrypted and not re.search(r"\bcopy:\s*yes\b", encrypted[0], re.I):
             return "", "pdf_restricted"
         match = re.search(r"^Pages:\s+(\d+)", info, re.M)
         if not match:
             return "", "pdf_failed"
         pages = int(match.group(1))
-    except (subprocess.SubprocessError, OSError):
-        return "", "pdf_failed"
+    except (subprocess.SubprocessError, OSError) as exc:
+        error = getattr(exc, "stderr", b"") or b""
+        if isinstance(error, bytes):
+            error = error.decode("utf-8", errors="replace")
+        return "", "pdf_restricted" if "password" in error.lower() else "pdf_failed"
     chunks = []
     partial = pages > 6
     used_ocr = False
