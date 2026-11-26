@@ -14,7 +14,7 @@ log = logging.getLogger("tegridy-coas")
 HELP = ("Send an original PDF/image privately with this caption:\n"
         "GB | product | original Telegram message link\n\n"
         "Example format: Lobster | RT10 | https://t.me/c/…\n"
-        "The original post must already be in the COA catalogue. A message ID can replace the link. "
+        "If the original post is missing, its metadata is fetched directly from the linked enabled source topic. No history scan or protected-media download is performed. A message ID can replace the link. "
         "Only authorized admins can import. Files are read locally and are not forwarded to the group or backup. "
         "Upload originals supplied by the publisher/lab; do not forward protected media.\n\n"
         "Remove an incorrect import with /coa_remove import_id. "
@@ -157,20 +157,25 @@ def install(client, authorized):
         if getattr(message.file, "size", 0) and message.file.size > 15 * 1024 * 1024:
             await event.respond("File exceeds the 15 MiB import limit.")
             return
-        db = connect()
         try:
-            metadata = validate_source(db, raw)
+            parsed = parse_caption(raw)
         except ValueError as exc:
             await event.respond(str(exc) + "\nSend /coa_import for the format.", parse_mode=None)
             return
-        finally:
-            db.close()
         if pending >= 10:
             await event.respond("The import queue is full. Please resend after the current files finish.")
             return
         pending += 1
         try:
             async with guard:
+                from tegridy_coa_source_resolver import ensure_source
+                db = connect()
+                try:
+                    gb, product, chat, topic, mid = parsed
+                    await asyncio.wait_for(ensure_source(db, chat, topic, mid, event.sender_id), timeout=30)
+                    metadata = validate_source(db, raw)
+                finally:
+                    db.close()
                 from tegridy_coa_sync import extract_pdf, ocr_file
                 with tempfile.TemporaryDirectory(prefix="coa-original-") as folder:
                     downloaded = await asyncio.wait_for(client.download_media(message, file=folder + "/"), timeout=90)
