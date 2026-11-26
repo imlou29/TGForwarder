@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlsplit
 
-LAB_HOSTS = {"chromate.org", "www.chromate.org", "verify.janoshik.com", "janoshik.com", "www.janoshik.com", "verifiedbyvanguard.com"}
+LAB_HOSTS = {"chromate.org", "www.chromate.org", "verify.janoshik.com", "janoshik.com", "www.janoshik.com", "verifiedbyvanguard.com", "uzorak.com"}
 
 
 def key(kind, chat, topic):
